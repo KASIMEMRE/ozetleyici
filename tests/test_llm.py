@@ -71,8 +71,8 @@ def test_429_sonra_yeniden_dener(monkeypatch):
 
 
 def test_surekli_500_sonunda_vazgecer(monkeypatch):
-    isleyici = lambda istek: httpx2.Response(500, json={"error": {"message": "çöktü"}})
-    with pytest.raises(LLMHatasi, match="4 denemeden sonra"):
+    isleyici = lambda istek: httpx2.Response(503, json=[{"error": {"message": "The model is overloaded."}}])
+    with pytest.raises(LLMHatasi, match="4 denemeden sonra.*overloaded"):
         istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari())
 
 
@@ -105,3 +105,17 @@ def test_akis_halinde_cevap(monkeypatch):
     assert gelen == parcalar
     assert cevap.metin == "Merhaba"
     assert cevap.cikti_token == 3
+
+
+def test_gemini_tarzi_400_anahtar_hatasi(monkeypatch):
+    govde = [{"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.",
+                        "status": "INVALID_ARGUMENT"}}]
+    isleyici = lambda istek: httpx2.Response(400, json=govde)
+    with pytest.raises(LLMHatasi, match="anahtarı geçersiz.*API key not valid"):
+        istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari())
+
+
+def test_400_ayrintisi_gosterilir(monkeypatch):
+    isleyici = lambda istek: httpx2.Response(400, json={"error": {"message": "max_tokens çok büyük"}})
+    with pytest.raises(LLMHatasi, match="max_tokens çok büyük"):
+        istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari())

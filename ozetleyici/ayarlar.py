@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 
+YER_TUTUCU_ANAHTAR = "buraya-anahtarini-yaz"  # .env.example'daki örnek değer
+
+
 class AyarHatasi(Exception):
     """Eksik veya hatalı ayar."""
 
@@ -33,8 +36,13 @@ def ayarlari_yukle() -> Ayarlar:
             + ". .env.example dosyasını .env adıyla kopyalayıp doldur."
         )
 
+    if os.environ["LLM_API_KEY"].strip() == YER_TUTUCU_ANAHTAR:
+        raise AyarHatasi(
+            "LLM_API_KEY hâlâ örnek değerde. .env dosyasına gerçek API anahtarını yazıp kaydet."
+        )
+
     return Ayarlar(
-        api_anahtari=os.environ["LLM_API_KEY"],
+        api_anahtari=os.environ["LLM_API_KEY"].strip(),
         base_url=os.environ["LLM_BASE_URL"],
         model=os.environ["LLM_MODEL"],
         girdi_fiyati=_sayi_oku("LLM_GIRDI_FIYATI"),

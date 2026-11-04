@@ -91,10 +91,15 @@ class LLMIstemcisi:
             except openai.NotFoundError as hata:  # 404
                 raise LLMHatasi(f"Model veya adres bulunamadı (404): model={self.model!r}. LLM_MODEL ve LLM_BASE_URL'i kontrol et.") from hata
             except openai.BadRequestError as hata:  # 400
-                raise LLMHatasi(f"İstek reddedildi (400): {hata.message}") from hata
+                ayrinti = _hata_ayrintisi(hata)
+                if "api key" in ayrinti.lower() or "api_key" in ayrinti.lower():
+                    # Gemini geçersiz anahtara 401 değil 400 döndürür.
+                    raise LLMHatasi(f"API anahtarı geçersiz (400). .env içindeki LLM_API_KEY'i kontrol et. Sağlayıcı: {ayrinti}") from hata
+                raise LLMHatasi(f"İstek reddedildi (400): {ayrinti}") from hata
             except GECICI_HATALAR as hata:
                 if deneme == self.en_fazla_deneme:
-                    raise LLMHatasi(f"{deneme} denemeden sonra vazgeçildi: {hata}") from hata
+                    ayrinti = _hata_ayrintisi(hata) if isinstance(hata, openai.APIStatusError) else str(hata)
+                    raise LLMHatasi(f"{deneme} denemeden sonra vazgeçildi ({type(hata).__name__}): {ayrinti}") from hata
                 bekleme = _bekleme_suresi(deneme, hata)
                 print(f"[uyarı] Geçici hata ({type(hata).__name__}). {bekleme:.1f} sn sonra yeniden deneniyor ({deneme}/{self.en_fazla_deneme})...")
                 time.sleep(bekleme)
@@ -129,6 +134,28 @@ class LLMIstemcisi:
             cikti_token=kullanim.completion_tokens if kullanim else None,
             deneme_sayisi=deneme,
         )
+
+
+def _hata_ayrintisi(hata: openai.APIStatusError) -> str:
+    """Sağlayıcının hata gövdesindeki açıklamayı çıkarır.
+
+    Sağlayıcılar hatayı farklı biçimde döndürür: {"error": {...}}, [{"error": {...}}]
+    veya düz metin. Bulamazsak ham gövdeyi gösteririz.
+    """
+    govde = hata.body
+    if isinstance(govde, list) and govde:
+        govde = govde[0]
+    if isinstance(govde, dict):
+        ic = govde.get("error", govde)
+        if isinstance(ic, dict) and ic.get("message"):
+            return str(ic["message"])
+        if isinstance(ic, str):
+            return ic
+    try:
+        metin = hata.response.text.strip()
+    except Exception:
+        metin = ""
+    return metin[:500] or hata.message
 
 
 def _bekleme_suresi(deneme: int, hata: Exception) -> float:

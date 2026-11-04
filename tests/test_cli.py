@@ -40,3 +40,13 @@ def test_eksik_ayar_anlamli_hata(tmp_path, capsys):
     belge.write_text("metin", encoding="utf-8")
     assert cli.main([str(belge)]) == 1
     assert "LLM_API_KEY" in capsys.readouterr().err
+
+
+def test_yer_tutucu_anahtar_yakalanir(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LLM_API_KEY", "buraya-anahtarini-yaz")
+    monkeypatch.setenv("LLM_BASE_URL", "https://sahte.local/v1")
+    monkeypatch.setenv("LLM_MODEL", "sahte")
+    belge = tmp_path / "b.txt"
+    belge.write_text("metin", encoding="utf-8")
+    assert cli.main([str(belge)]) == 1
+    assert "örnek değerde" in capsys.readouterr().err
