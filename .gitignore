@@ -1,0 +1,19 @@
+# Sanal ortam: her bilgisayarda yeniden kurulur, depoya girmez
+.venv/
+
+# Gizli anahtarlar: ASLA depoya girmez
+.env
+
+# Python'un ürettiği ara dosyalar
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Programın ürettiği çıktılar
+ciktilar/
+*.ozet.json
+
+# Editör ve işletim sistemi dosyaları
+.vscode/
+Thumbs.db
+.DS_Store

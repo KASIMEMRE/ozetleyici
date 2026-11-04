@@ -1,0 +1,3 @@
+# Windows (CRLF) ve Linux/macOS (LF) satır sonlarını Git otomatik düzenlesin
+* text=auto
+*.pdf binary
