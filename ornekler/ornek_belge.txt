@@ -1,0 +1,19 @@
+Uzaktan Çalışma Politikası (Örnek Şirket A.Ş.)
+
+1. Amaç
+Bu politika, Örnek Şirket A.Ş. çalışanlarının haftada en fazla üç gün uzaktan çalışabilmesine ilişkin kuralları belirler. Politika 1 Ocak 2027 tarihinde yürürlüğe girer.
+
+2. Kapsam
+Deneme süresini tamamlamış tüm tam zamanlı çalışanlar başvurabilir. Sahada çalışması zorunlu olan depo ve servis ekipleri kapsam dışındadır.
+
+3. Başvuru
+Çalışan, uzaktan çalışmak istediği günleri her ayın 25'ine kadar yöneticisine bildirir. Yönetici talebi beş iş günü içinde onaylar veya gerekçesiyle reddeder.
+
+4. Ekipman ve güvenlik
+Şirket her uzaktan çalışana bir dizüstü bilgisayar ve aylık 400 TL internet desteği sağlar. Şirket verilerine yalnızca VPN üzerinden erişilir; kişisel bilgisayarlarda müşteri verisi tutulamaz. Kaybolan veya çalınan cihaz 24 saat içinde bilgi güvenliği ekibine bildirilir.
+
+5. Çalışma saatleri
+Uzaktan çalışan personel 10:00-16:00 arasında ulaşılabilir olmak zorundadır. Fazla mesai, ofiste çalışmayla aynı kurallara tabidir.
+
+6. Denetim
+İnsan Kaynakları politikayı her yıl Aralık ayında gözden geçirir. Kurallara aykırı davranan çalışanın uzaktan çalışma hakkı üç ay süreyle askıya alınabilir.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .ayarlar import AyarHatasi, ayarlari_yukle
@@ -41,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         metin = metni_oku(args.dosya)
         ayarlar = ayarlari_yukle()
         if args.model:
-            ayarlar = type(ayarlar)(**{**ayarlar.__dict__, "model": args.model})
+            ayarlar = replace(ayarlar, model=args.model)
         istemci = LLMIstemcisi(ayarlar)
         uretim = UretimAyarlari(temperature=args.temperature, top_p=args.top_p, max_token=args.max_token)
 
