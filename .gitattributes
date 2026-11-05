@@ -1,3 +1,5 @@
 # Windows (CRLF) ve Linux/macOS (LF) satır sonlarını Git otomatik düzenlesin
 * text=auto
 *.pdf binary
+# Git kancası (hook) Windows'ta da sh ile çalışır; LF kalmalı
+.githooks/* text eol=lf

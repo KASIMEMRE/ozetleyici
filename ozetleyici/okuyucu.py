@@ -14,6 +14,9 @@ DESTEKLENEN_UZANTILAR = {".txt", ".md", ".pdf"}
 # Türkçe için kullandığı kodlamadır; UTF-8 olmayan dosyalar genelde budur.
 METIN_KODLAMALARI = ("utf-8-sig", "cp1254")
 
+# Çok büyük dosyalar hem belleği hem API bütçesini tüketir.
+EN_BUYUK_DOSYA_MB = 50
+
 
 class OkumaHatasi(Exception):
     """Dosya okunamadığında kullanıcıya gösterilecek anlamlı hata."""
@@ -30,6 +33,10 @@ def metni_oku(yol: Path) -> str:
     if uzanti not in DESTEKLENEN_UZANTILAR:
         desteklenen = ", ".join(sorted(DESTEKLENEN_UZANTILAR))
         raise OkumaHatasi(f"Desteklenmeyen dosya türü: {uzanti} (desteklenenler: {desteklenen})")
+
+    boyut_mb = yol.stat().st_size / 1_000_000
+    if boyut_mb > EN_BUYUK_DOSYA_MB:
+        raise OkumaHatasi(f"Dosya çok büyük: {boyut_mb:.0f} MB (sınır {EN_BUYUK_DOSYA_MB} MB).")
 
     metin = _pdf_oku(yol) if uzanti == ".pdf" else _metin_dosyasi_oku(yol)
     metin = _temizle(metin)

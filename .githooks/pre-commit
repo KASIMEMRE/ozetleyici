@@ -1,0 +1,10 @@
+#!/bin/sh
+# Her commit'ten önce gizli anahtar taraması yapar; bulursa commit'i durdurur.
+# Bir kez kurulum:  git config core.hooksPath .githooks
+for PY in python python3 py; do
+  if command -v "$PY" >/dev/null 2>&1; then
+    exec "$PY" scripts/gizli_tara.py --staged
+  fi
+done
+echo "[gizli-tara] Python bulunamadı; tarama yapılamadı. Commit durduruldu." >&2
+exit 1

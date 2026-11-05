@@ -1,0 +1,32 @@
+name: Testler
+
+on:
+  push:
+  pull_request:
+
+# En az yetki: iş akışı depoyu yalnızca okuyabilir.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.10"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Bağımlılıkları kur
+        run: pip install -r requirements-dev.txt
+      - name: Gizli anahtar taraması
+        run: python scripts/gizli_tara.py
+      - name: Testler
+        run: python -m pytest

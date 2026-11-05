@@ -7,18 +7,25 @@ anahtar ve model adını değiştirmek yeterli.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import openai
 
-from .ayarlar import Ayarlar
+from .ayarlar import Ayarlar, anahtari_gizle
+
+log = logging.getLogger(__name__)
 
 
 class LLMHatasi(Exception):
     """API'den kaynaklanan, kullanıcıya gösterilecek hata."""
+
+
+class _GeciciHataTukendi(Exception):
+    """Bir model için tüm yeniden denemeler bitti (iç kullanım)."""
 
 
 @dataclass
@@ -27,6 +34,8 @@ class LLMCevabi:
     girdi_token: int | None
     cikti_token: int | None
     deneme_sayisi: int
+    model: str = ""
+    bitis_nedeni: str | None = None
 
 
 @dataclass
@@ -45,7 +54,7 @@ class UretimAyarlari:
 # Bu hatalar geçicidir: biraz bekleyip yeniden denemek mantıklı.
 GECICI_HATALAR = (
     openai.RateLimitError,       # 429: çok hızlı istek attın
-    openai.InternalServerError,  # 5xx: sağlayıcı tarafında sorun
+    openai.InternalServerError,  # 5xx: sağlayıcı tarafında sorun (503 = aşırı yük)
     openai.APIConnectionError,   # internet/bağlantı sorunu (zaman aşımı dahil)
 )
 
@@ -53,14 +62,19 @@ GECICI_HATALAR = (
 class LLMIstemcisi:
     def __init__(self, ayarlar: Ayarlar, en_fazla_deneme: int = 4) -> None:
         self.model = ayarlar.model
+        self.yedek_model = ayarlar.yedek_model
         self.en_fazla_deneme = en_fazla_deneme
+        self._anahtar = ayarlar.api_anahtari
+        # OpenAI'nin yeni modelleri "max_tokens" yerine "max_completion_tokens" ister.
+        # Önce yaygın olanı deneriz; sağlayıcı reddederse bir kez değiştirip tekrar göndeririz.
+        self._token_parametresi = "max_tokens"
         # max_retries=0: yeniden denemeyi kütüphaneye bırakmıyoruz,
         # aşağıda kendimiz yazıyoruz ki nasıl çalıştığını görelim.
         self._istemci = openai.OpenAI(
             api_key=ayarlar.api_anahtari,
             base_url=ayarlar.base_url,
             max_retries=0,
-            timeout=120,
+            timeout=ayarlar.zaman_asimi_sn,
         )
 
     def tamamla(
@@ -69,71 +83,167 @@ class LLMIstemcisi:
         kullanici: str,
         uretim: UretimAyarlari,
         parca_gelince: Callable[[str], None] | None = None,
+        akis_sifirlandi: Callable[[], None] | None = None,
     ) -> LLMCevabi:
-        """Modele bir istek gönderir. parca_gelince verilirse cevap akış halinde gelir."""
+        """Modele istek gönderir.
+
+        parca_gelince verilirse cevap akış halinde gelir. Akışın ortasında hata olur
+        ve istek baştan gönderilirse önce akis_sifirlandi çağrılır; böylece arayüz
+        ekrandaki yarım metnin geçersiz olduğunu kullanıcıya söyleyebilir.
+        """
         mesajlar = [
             {"role": "system", "content": sistem},
             {"role": "user", "content": kullanici},
         ]
-        parametreler: dict = {"model": self.model, "messages": mesajlar, "max_tokens": uretim.max_token}
+        durum = {"yayinlandi": False}
+
+        def yayinla(parca: str) -> None:
+            durum["yayinlandi"] = True
+            parca_gelince(parca)  # type: ignore[misc]
+
+        def gerekirse_sifirla() -> None:
+            if durum["yayinlandi"]:
+                durum["yayinlandi"] = False
+                if akis_sifirlandi:
+                    akis_sifirlandi()
+
+        modeller = [self.model]
+        if self.yedek_model and self.yedek_model != self.model:
+            modeller.append(self.yedek_model)
+
+        for sira, model in enumerate(modeller):
+            try:
+                return self._modelle_dene(
+                    model, mesajlar, uretim, yayinla if parca_gelince else None, gerekirse_sifirla
+                )
+            except _GeciciHataTukendi as hata:
+                if sira + 1 < len(modeller):
+                    log.warning("%s yanıt vermiyor; yedek model %s deneniyor.", model, modeller[sira + 1])
+                    gerekirse_sifirla()
+                    continue
+                raise self._hata(str(hata)) from hata.__cause__
+        raise AssertionError("buraya ulaşılmamalı")
+
+    # ------------------------------------------------------------------ iç kısım
+
+    def _modelle_dene(self, model, mesajlar, uretim, yayinla, gerekirse_sifirla) -> LLMCevabi:
+        deneme = 1
+        while True:
+            parametreler = self._parametreler(model, mesajlar, uretim)
+            try:
+                if yayinla is None:
+                    cevap = self._tek_seferde(parametreler)
+                else:
+                    cevap = self._akis_halinde(parametreler, yayinla)
+            except openai.AuthenticationError as hata:  # 401
+                raise self._hata("API anahtarı geçersiz (401). .env içindeki LLM_API_KEY'i kontrol et.") from hata
+            except openai.PermissionDeniedError as hata:  # 403
+                raise self._hata(f"Erişim reddedildi (403): {_hata_ayrintisi(hata)}") from hata
+            except openai.NotFoundError as hata:  # 404
+                raise self._hata(
+                    f"Model veya adres bulunamadı (404): model={model!r}. LLM_MODEL ve LLM_BASE_URL'i kontrol et."
+                ) from hata
+            except openai.BadRequestError as hata:  # 400
+                ayrinti = _hata_ayrintisi(hata)
+                if "max_completion_tokens" in ayrinti and self._token_parametresi == "max_tokens":
+                    log.info("Sağlayıcı max_completion_tokens istiyor; parametre değiştirilip yeniden gönderiliyor.")
+                    self._token_parametresi = "max_completion_tokens"
+                    gerekirse_sifirla()
+                    continue  # deneme hakkından düşmez
+                if "api key" in ayrinti.lower() or "api_key" in ayrinti.lower():
+                    # Gemini geçersiz anahtara 401 değil 400 döndürür.
+                    raise self._hata(
+                        f"API anahtarı geçersiz (400). .env içindeki LLM_API_KEY'i kontrol et. Sağlayıcı: {ayrinti}"
+                    ) from hata
+                raise self._hata(f"İstek reddedildi (400): {ayrinti}") from hata
+            except GECICI_HATALAR as hata:
+                if deneme >= self.en_fazla_deneme:
+                    ayrinti = _hata_ayrintisi(hata) if isinstance(hata, openai.APIStatusError) else str(hata)
+                    raise _GeciciHataTukendi(
+                        f"{model}: {deneme} denemeden sonra vazgeçildi ({type(hata).__name__}): {ayrinti}"
+                    ) from hata
+                bekleme = _bekleme_suresi(deneme, hata)
+                log.warning("Geçici hata (%s). %.1f sn sonra yeniden deneniyor (%d/%d)...",
+                            type(hata).__name__, bekleme, deneme, self.en_fazla_deneme)
+                time.sleep(bekleme)
+                gerekirse_sifirla()
+                deneme += 1
+                continue
+            except openai.APIStatusError as hata:  # diğer tüm HTTP hataları
+                raise self._hata(f"API hatası ({hata.status_code}): {_hata_ayrintisi(hata)}") from hata
+
+            cevap.deneme_sayisi = deneme
+            cevap.model = model
+            self._cevabi_dogrula(cevap)
+            return cevap
+
+    def _parametreler(self, model: str, mesajlar: list, uretim: UretimAyarlari) -> dict[str, Any]:
+        parametreler: dict[str, Any] = {
+            "model": model,
+            "messages": mesajlar,
+            self._token_parametresi: uretim.max_token,
+        }
         if uretim.temperature is not None:
             parametreler["temperature"] = uretim.temperature
         if uretim.top_p is not None:
             parametreler["top_p"] = uretim.top_p
+        return parametreler
 
-        for deneme in range(1, self.en_fazla_deneme + 1):
-            try:
-                if parca_gelince is None:
-                    return self._tek_seferde(parametreler, deneme)
-                return self._akis_halinde(parametreler, deneme, parca_gelince)
-            except openai.AuthenticationError as hata:  # 401
-                raise LLMHatasi("API anahtarı geçersiz (401). .env içindeki LLM_API_KEY'i kontrol et.") from hata
-            except openai.NotFoundError as hata:  # 404
-                raise LLMHatasi(f"Model veya adres bulunamadı (404): model={self.model!r}. LLM_MODEL ve LLM_BASE_URL'i kontrol et.") from hata
-            except openai.BadRequestError as hata:  # 400
-                ayrinti = _hata_ayrintisi(hata)
-                if "api key" in ayrinti.lower() or "api_key" in ayrinti.lower():
-                    # Gemini geçersiz anahtara 401 değil 400 döndürür.
-                    raise LLMHatasi(f"API anahtarı geçersiz (400). .env içindeki LLM_API_KEY'i kontrol et. Sağlayıcı: {ayrinti}") from hata
-                raise LLMHatasi(f"İstek reddedildi (400): {ayrinti}") from hata
-            except GECICI_HATALAR as hata:
-                if deneme == self.en_fazla_deneme:
-                    ayrinti = _hata_ayrintisi(hata) if isinstance(hata, openai.APIStatusError) else str(hata)
-                    raise LLMHatasi(f"{deneme} denemeden sonra vazgeçildi ({type(hata).__name__}): {ayrinti}") from hata
-                bekleme = _bekleme_suresi(deneme, hata)
-                print(f"[uyarı] Geçici hata ({type(hata).__name__}). {bekleme:.1f} sn sonra yeniden deneniyor ({deneme}/{self.en_fazla_deneme})...")
-                time.sleep(bekleme)
-        raise AssertionError("buraya ulaşılmamalı")
-
-    def _tek_seferde(self, parametreler: dict, deneme: int) -> LLMCevabi:
+    def _tek_seferde(self, parametreler: dict) -> LLMCevabi:
         cevap = self._istemci.chat.completions.create(**parametreler)
+        secim = cevap.choices[0] if cevap.choices else None
         kullanim = cevap.usage
         return LLMCevabi(
-            metin=cevap.choices[0].message.content or "",
+            metin=(secim.message.content if secim else None) or "",
             girdi_token=kullanim.prompt_tokens if kullanim else None,
             cikti_token=kullanim.completion_tokens if kullanim else None,
-            deneme_sayisi=deneme,
+            deneme_sayisi=0,
+            bitis_nedeni=secim.finish_reason if secim else None,
         )
 
-    def _akis_halinde(self, parametreler: dict, deneme: int, parca_gelince: Callable[[str], None]) -> LLMCevabi:
+    def _akis_halinde(self, parametreler: dict, yayinla: Callable[[str], None]) -> LLMCevabi:
         akis = self._istemci.chat.completions.create(
             **parametreler, stream=True, stream_options={"include_usage": True}
         )
         parcalar: list[str] = []
         kullanim = None
+        bitis = None
         for parca in akis:
             if parca.usage:  # token bilgisi genelde son parçada gelir
                 kullanim = parca.usage
-            if parca.choices and parca.choices[0].delta.content:
-                yazi = parca.choices[0].delta.content
-                parcalar.append(yazi)
-                parca_gelince(yazi)
+            if not parca.choices:
+                continue
+            secim = parca.choices[0]
+            if secim.finish_reason:
+                bitis = secim.finish_reason
+            if secim.delta and secim.delta.content:
+                parcalar.append(secim.delta.content)
+                yayinla(secim.delta.content)
         return LLMCevabi(
             metin="".join(parcalar),
             girdi_token=kullanim.prompt_tokens if kullanim else None,
             cikti_token=kullanim.completion_tokens if kullanim else None,
-            deneme_sayisi=deneme,
+            deneme_sayisi=0,
+            bitis_nedeni=bitis,
         )
+
+    def _cevabi_dogrula(self, cevap: LLMCevabi) -> None:
+        """Yarım, boş veya filtrelenmiş cevabı sessizce kabul etme."""
+        bos = not cevap.metin.strip()
+        if cevap.bitis_nedeni == "length":
+            mesaj = (f"Cevap token sınırına takılıp kesildi ({cevap.cikti_token or '?'} çıktı token'ı). "
+                     "--max-token değerini artır.")
+            if bos:
+                mesaj += (" Model hiç görünür metin üretmedi: düşünen (reasoning) modeller"
+                          " bütçenin tamamını düşünme adımlarına harcayabilir.")
+            raise self._hata(mesaj)
+        if cevap.bitis_nedeni == "content_filter":
+            raise self._hata("Sağlayıcının içerik filtresi cevabı engelledi.")
+        if bos:
+            raise self._hata(f"Model boş cevap döndürdü (bitiş nedeni: {cevap.bitis_nedeni}).")
+
+    def _hata(self, mesaj: str) -> LLMHatasi:
+        return LLMHatasi(anahtari_gizle(mesaj, self._anahtar))
 
 
 def _hata_ayrintisi(hata: openai.APIStatusError) -> str:

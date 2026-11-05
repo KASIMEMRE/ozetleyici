@@ -1,15 +1,17 @@
 # Sanal ortam: her bilgisayarda yeniden kurulur, depoya girmez
 .venv/
 
-# Gizli anahtarlar: ASLA depoya girmez
+# Gizli anahtarlar: ASLA depoya girmez (.env, .env.local, .env.prod ...)
 .env
+.env.*
+!.env.example
 
 # Python'un ürettiği ara dosyalar
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# Programın ürettiği çıktılar
+# Programın ürettiği çıktılar (özetler belgedeki kişisel veriyi içerebilir)
 ciktilar/
 *.ozet.json
 

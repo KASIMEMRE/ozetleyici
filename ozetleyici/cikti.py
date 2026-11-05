@@ -12,6 +12,8 @@ from .ozetle import OzetSonucu
 
 
 def json_yaz(sonuc: OzetSonucu, kaynak: Path, hedef: Path) -> dict:
+    # Bilerek YAZMADIKLARIMIZ: API anahtarı, belgenin tam metni, kaynağın tam yolu
+    # (kullanıcı adını içerebilir). Yalnızca dosya adı yazılır.
     veri = {
         "kaynak_dosya": kaynak.name,
         "olusturulma": datetime.now(timezone.utc).isoformat(timespec="seconds"),
