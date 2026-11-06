@@ -8,11 +8,12 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from . import ayarlar as ayarlar_modulu
 from .ayarlar import AyarHatasi, anahtari_gizle, ayarlari_yukle
 from .cikti import json_yaz
 from .gizlilik import kisisel_veri_ipuclari
 from .llm import LLMHatasi, LLMIstemcisi, UretimAyarlari
-from .okuyucu import OkumaHatasi, metni_oku
+from .okuyucu import OcrAyari, OkumaHatasi, belge_dosyasini_oku
 from .ozetle import UZUNLUKLAR, ozetle
 
 # Çıkış kodları: başka programlar ve CI bunlara bakar.
@@ -58,6 +59,8 @@ def arguman_ayristirici() -> argparse.ArgumentParser:
     p.add_argument("--akissiz", action="store_true", help="Cevabı akış halinde değil, tek seferde al")
     p.add_argument("--yine-de-gonder", action="store_true",
                    help="Belgede kişisel veri ipucu bulunsa bile sağlayıcıya gönder")
+    p.add_argument("--ocr", choices=["yerel", "gemini", "kapali"], default="yerel",
+                   help="Taranmış sayfa/görsel okuma: yerel Tesseract (varsayılan), gemini (görüntü sağlayıcıya gider), kapali")
     p.add_argument("-s", "--sessiz", action="store_true", help="Bilgi mesajlarını gösterme")
     return p
 
@@ -71,6 +74,18 @@ def _logging_kur(sessiz: bool) -> None:
     kok.propagate = False
 
 
+def _ocr_bilgisi(okuma, istemci) -> dict:
+    """JSON'a eklenecek okuma/OCR bilgileri."""
+    return {
+        "belge_turu": okuma.tur,
+        "okuma_notlari": okuma.notlar,
+        "ocr_sayfa_sayisi": okuma.ocr_sayfa_sayisi,
+        "saglayiciya_gonderilen_gorsel": okuma.disari_gonderilen_gorsel,
+        "ocr_girdi_token": getattr(istemci, "ocr_girdi_token", 0),
+        "ocr_cikti_token": getattr(istemci, "ocr_cikti_token", 0),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows terminalinde veya çıktı dosyaya yönlendirildiğinde Türkçe karakterler bozulmasın.
     for akis in (sys.stdout, sys.stderr):
@@ -79,12 +94,32 @@ def main(argv: list[str] | None = None) -> int:
 
     args = arguman_ayristirici().parse_args(argv)
     _logging_kur(args.sessiz)
+    # .env'i en başta yükle: TESSERACT_YOLU gibi ayarlar, API ayarlarından önce
+    # (dosya okunurken) gerekiyor.
+    ayarlar_modulu.load_dotenv()
     log = logging.getLogger("ozetleyici")
     hedef = args.cikti or args.dosya.with_suffix(".ozet.json")
     anahtar: str | None = None
 
     try:
-        metin = metni_oku(args.dosya)
+        istemci = None
+        ayarlar = None
+        ocr = OcrAyari(kip=args.ocr)
+        if args.ocr == "gemini":
+            # Görüntüyü okumak için istemci önce gerekli. Dikkat: görüntü, kişisel veri
+            # kontrolünden ÖNCE sağlayıcıya gider (metni ancak okuduktan sonra kontrol edebiliriz).
+            ayarlar = ayarlari_yukle()
+            anahtar = ayarlar.api_anahtari
+            if args.model:
+                ayarlar = replace(ayarlar, model=args.model)
+            istemci = LLMIstemcisi(ayarlar)
+            ocr = OcrAyari(kip="gemini", gorsel_okuyucu=istemci.gorseli_metne_cevir)
+            log.warning("Gemini OCR: taranmış sayfalar/görseller kişisel veri kontrolünden önce sağlayıcıya gönderilecek.")
+
+        okuma = belge_dosyasini_oku(args.dosya, ocr)
+        metin = okuma.metin
+        for not_ in okuma.notlar:
+            log.info(not_)
 
         bulgular = kisisel_veri_ipuclari(metin)
         if bulgular and not args.yine_de_gonder:
@@ -98,11 +133,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             return KISISEL_VERI
 
-        ayarlar = ayarlari_yukle()
-        anahtar = ayarlar.api_anahtari
-        if args.model:
-            ayarlar = replace(ayarlar, model=args.model)
-        istemci = LLMIstemcisi(ayarlar)
+        if istemci is None:
+            ayarlar = ayarlari_yukle()
+            anahtar = ayarlar.api_anahtari
+            if args.model:
+                ayarlar = replace(ayarlar, model=args.model)
+            istemci = LLMIstemcisi(ayarlar)
         uretim = UretimAyarlari(temperature=args.temperature, top_p=args.top_p, max_token=args.max_token)
 
         log.info("%s: %s karakter okundu. Model: %s", args.dosya.name, f"{len(metin):,}", ayarlar.model)
@@ -123,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.akissiz:
             print(sonuc.ozet)
-        json_yaz(sonuc, args.dosya, hedef)
+        json_yaz(sonuc, args.dosya, hedef, ek=_ocr_bilgisi(okuma, istemci))
     except (OkumaHatasi, AyarHatasi, LLMHatasi, ValueError, OSError) as hata:
         print(f"\n[hata] {anahtari_gizle(str(hata), anahtar)}", file=sys.stderr)
         return HATA

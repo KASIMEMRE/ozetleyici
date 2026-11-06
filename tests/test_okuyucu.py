@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from ozetleyici import okuyucu
-from ozetleyici.okuyucu import OkumaHatasi, metni_oku
+from ozetleyici.okuyucu import OcrAyari, OkumaHatasi, metni_oku
 
 VERI = Path(__file__).parent / "veri"
 
@@ -41,7 +41,7 @@ def test_pdf_turkce_ve_cok_sayfa():
 
 def test_bos_pdf_anlamli_hata():
     with pytest.raises(OkumaHatasi, match="OCR"):
-        metni_oku(VERI / "bos.pdf")
+        metni_oku(VERI / "bos.pdf", OcrAyari(kip="kapali"))
 
 
 def test_bozuk_pdf(tmp_path):
@@ -62,8 +62,8 @@ def test_klasor_verilirse(tmp_path):
 
 
 def test_desteklenmeyen_uzanti(tmp_path):
-    dosya = tmp_path / "a.docx"
-    dosya.write_bytes(b"x")
+    dosya = tmp_path / "a.exe"
+    dosya.write_bytes(b"MZ")
     with pytest.raises(OkumaHatasi, match="Desteklenmeyen"):
         metni_oku(dosya)
 

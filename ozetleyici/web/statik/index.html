@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="oturum" content="{{OTURUM_ANAHTARI}}">
+  <title>Belge Özetleyici</title>
+  <link rel="stylesheet" href="/statik/stil.css">
+  <script src="/statik/uygulama.js" defer></script>
+</head>
+<body>
+  <header class="ust">
+    <div class="marka">
+      <span class="logo" aria-hidden="true">Ö</span>
+      <div>
+        <h1>Belge Özetleyici</h1>
+        <p class="alt">PDF, Word, Excel, PowerPoint ve görsel belgeleri özetler</p>
+      </div>
+    </div>
+    <div id="durum" class="durum" role="status">Bağlanıyor…</div>
+  </header>
+
+  <main class="izgara">
+    <section class="kart" aria-labelledby="belge-baslik">
+      <h2 id="belge-baslik">Belge</h2>
+
+      <label id="birak" class="birak" for="dosya">
+        <input id="dosya" type="file" hidden>
+        <span class="birak-ikon" aria-hidden="true">⇪</span>
+        <span id="birak-metin" class="birak-metin">Dosyayı buraya sürükle ya da <u>seç</u></span>
+        <span id="birak-alt" class="birak-alt">En fazla 25 MB</span>
+      </label>
+
+      <fieldset class="secenek">
+        <legend>Özet uzunluğu</legend>
+        <div class="segment">
+          <label><input type="radio" name="uzunluk" value="kisa"><span>Kısa</span></label>
+          <label><input type="radio" name="uzunluk" value="orta" checked><span>Orta</span></label>
+          <label><input type="radio" name="uzunluk" value="uzun"><span>Uzun</span></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="secenek">
+        <legend>Taranmış sayfalar ve görseller</legend>
+        <label class="radyo"><input type="radio" name="ocr" value="yerel" checked>
+          <span><b>Yerel okuma</b> <small>Tesseract · görüntü bilgisayardan çıkmaz</small>
+          <small id="tesseract-uyari" class="uyari-yazi" hidden>Tesseract kurulu değil (README'ye bak)</small></span></label>
+        <label class="radyo"><input type="radio" name="ocr" value="gemini">
+          <span><b>Model ile okuma</b> <small>daha iyi okur · görüntü LLM sağlayıcısına gönderilir</small></span></label>
+        <label class="radyo"><input type="radio" name="ocr" value="kapali">
+          <span><b>Kapalı</b> <small>yalnızca metin içeren sayfalar</small></span></label>
+      </fieldset>
+
+      <button id="ozetle" class="dugme" type="button" disabled>Özetle</button>
+      <p class="gizlilik">Belge diske kaydedilmez. Metni, özet için LLM sağlayıcısına gönderilir; kişisel veri ipucu görülürse önce sana sorulur.</p>
+    </section>
+
+    <section class="kart" aria-labelledby="ozet-baslik" aria-live="polite">
+      <div class="kart-ust">
+        <h2 id="ozet-baslik">Özet</h2>
+        <div class="eylemler">
+          <button id="kopyala" class="ikincil" type="button" disabled>Kopyala</button>
+          <button id="indir" class="ikincil" type="button" disabled>JSON indir</button>
+        </div>
+      </div>
+
+      <div id="kisisel" class="kisisel" hidden>
+        <p><b>Belgede kişisel veri olabilir:</b> <span id="kisisel-liste"></span></p>
+        <p>Ücretsiz LLM katmanlarında gönderilen içerik model geliştirmede kullanılabilir ve insanlar tarafından okunabilir.</p>
+        <div class="eylemler">
+          <button id="yine-de" class="dugme tehlike" type="button">Bilerek gönder</button>
+          <button id="vazgec" class="ikincil" type="button">Vazgeç</button>
+        </div>
+      </div>
+
+      <ul id="notlar" class="notlar"></ul>
+      <div id="ozet" class="ozet bos"><span>Bir belge seçip <b>Özetle</b>'ye bas.</span></div>
+      <p id="hata" class="hata" role="alert" hidden></p>
+      <dl id="olcum" class="olcum" hidden></dl>
+    </section>
+  </main>
+  <footer class="alt-bilgi">Belge Özetleyici {{SURUM}} · yalnızca bu bilgisayardan erişilir</footer>
+</body>
+</html>

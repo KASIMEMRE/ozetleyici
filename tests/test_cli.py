@@ -133,3 +133,42 @@ def test_turkce_virgullu_sayi_kabul_edilir(tmp_path, monkeypatch, ortam):
     monkeypatch.setattr(cli, "LLMIstemcisi", Kaydeden)
     assert cli.main([str(belge_yaz(tmp_path)), "--temperature", "0,7"]) == cli.BASARILI
     assert alinan["t"] == 0.7
+
+
+def test_word_dosyasi_ve_okuma_notlari_jsonda(tmp_path, monkeypatch, ortam):
+    from docx import Document
+    monkeypatch.setattr(cli, "LLMIstemcisi", SahteIstemci)
+    d = Document(); d.add_paragraph("Bütçe onaylandı.")
+    yol = tmp_path / "karar.docx"; d.save(yol)
+    assert cli.main([str(yol), "--akissiz"]) == cli.BASARILI
+    veri = json.loads((tmp_path / "karar.ozet.json").read_text(encoding="utf-8"))
+    assert veri["belge_turu"] == "word" and veri["saglayiciya_gonderilen_gorsel"] == 0
+
+
+def test_gemini_ocr_uyarisi(tmp_path, monkeypatch, capsys, ortam):
+    import io
+    from PIL import Image
+
+    class GorenIstemci(SahteIstemci):
+        ocr_girdi_token = 7
+        ocr_cikti_token = 2
+        def gorseli_metne_cevir(self, png):
+            return "Fiş toplamı 120 TL"
+
+    monkeypatch.setattr(cli, "LLMIstemcisi", GorenIstemci)
+    yol = tmp_path / "fis.png"
+    Image.new("RGB", (200, 80), "white").save(yol)
+    assert cli.main([str(yol), "--ocr", "gemini"]) == cli.BASARILI
+    assert "kişisel veri kontrolünden önce" in capsys.readouterr().err
+    veri = json.loads((tmp_path / "fis.ozet.json").read_text(encoding="utf-8"))
+    assert veri["saglayiciya_gonderilen_gorsel"] == 1 and veri["ocr_girdi_token"] == 7
+
+
+def test_env_dosyasi_okumadan_once_yuklenir(tmp_path, monkeypatch):
+    """TESSERACT_YOLU gibi ayarlar dosya okunmadan önce .env'den gelmeli."""
+    sira = []
+    monkeypatch.setattr("ozetleyici.ayarlar.load_dotenv", lambda: sira.append("env"))
+    gercek = cli.belge_dosyasini_oku
+    monkeypatch.setattr(cli, "belge_dosyasini_oku", lambda *a, **k: sira.append("oku") or gercek(*a, **k))
+    cli.main([str(belge_yaz(tmp_path))])
+    assert sira[:2] == ["env", "oku"]

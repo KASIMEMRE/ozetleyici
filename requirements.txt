@@ -1,3 +1,15 @@
 openai>=3.40,<4
 pypdf>=6.0,<7
 python-dotenv>=1.0,<2
+# Office belgeleri
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+python-pptx>=1.0,<2
+defusedxml>=0.7      # openpyxl XML'i güvenli ayrıştırsın (XXE / "billion laughs" saldırılarına karşı)
+# Görsel ve OCR
+Pillow>=11
+pypdfium2>=4.30      # taranmış PDF sayfalarını görüntüye çevirmek için (ek program gerektirmez)
+pytesseract>=0.3.13  # yerel OCR; Tesseract programının ayrıca kurulması gerekir
+# Web arayüzü
+fastapi>=0.115
+uvicorn>=0.30

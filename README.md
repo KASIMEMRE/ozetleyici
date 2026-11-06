@@ -1,11 +1,25 @@
 # Türkçe Belge Özetleyici
 
-Bir PDF veya metin dosyasını LLM ile özetleyip sonucu JSON olarak kaydeden komut satırı aracı.
-Gemini, Claude, OpenAI ve yerel Ollama ile aynı kodla çalışır: sağlayıcıyı `.env` dosyasından seçersin.
+PDF, Word, Excel, PowerPoint, CSV ve görsel (taranmış) belgeleri LLM ile özetleyen araç.
+Tarayıcıda çalışan bir arayüzü ve bir komut satırı aracı var. Gemini, Claude, OpenAI ve yerel
+Ollama ile aynı kodla çalışır: sağlayıcıyı `.env` dosyasından seçersin.
 
 ```
-python -m ozetleyici ornekler/ornek_belge.txt --uzunluk kisa
+python -m ozetleyici.web                                   # tarayıcı arayüzü
+python -m ozetleyici ornekler/ornek_belge.txt -u kisa      # komut satırı
 ```
+
+| Tür | Uzantı | Nasıl okunur |
+| --- | --- | --- |
+| Metin | `.txt` `.md` | UTF-8, olmazsa Windows Türkçe (cp1254) |
+| PDF | `.pdf` | Metinli sayfalar doğrudan; taranmış sayfalar OCR ile |
+| Word | `.docx` | Başlıklar, paragraflar, tablolar, üst bilgi; **gizli biçimli yazı okunmaz** |
+| PowerPoint | `.pptx` | Slayt metinleri, tablolar, konuşmacı notları |
+| Excel | `.xlsx` `.xlsm` | Her sayfadan 100 satır önizleme + **istatistikler Python'da, tüm satırlardan**; gizli sayfalar ve makrolar okunmaz |
+| CSV | `.csv` | `;` `,` sekme ayırıcısı otomatik; Türkçe ondalık (1.234,56) anlaşılır |
+| Görsel | `.png` `.jpg` | OCR ile |
+
+Eski `.doc` `.xls` `.ppt` biçimleri desteklenmez; Office'te "Farklı Kaydet" ile yeni biçime çevir.
 
 ## Kurulum (Windows, PowerShell)
 
@@ -25,12 +39,31 @@ notepad .env      # anahtarı SADECE bu dosyaya yaz
 git config core.hooksPath .githooks   # commit'lere anahtar girmesini engelleyen kancayı aç
 ```
 
+### Tesseract (taranmış belgeleri yerel okumak için, isteğe bağlı)
+
+1. [UB Mannheim Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) sayfasından Windows kurucusunu indir.
+2. Kurulumda **Additional language data** altından **Turkish**'i işaretle.
+3. Varsayılan yere (`C:\Program Files\Tesseract-OCR`) kurduysan başka ayar gerekmez; farklı bir yere kurduysan
+   `.env` dosyasına `TESSERACT_YOLU=` ile `tesseract.exe`'nin tam yolunu yaz.
+
+Tesseract kurulu değilse taranmış sayfalar için "Model ile okuma" seçeneğini veya `--ocr gemini`'yi kullanabilirsin.
+
 `Activate.ps1` "running scripts is disabled" hatası verirse bir kez şunu çalıştır:
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
 macOS/Linux'ta etkinleştirme: `source .venv/bin/activate`, kopyalama: `cp .env.example .env`
 
-## Kullanım
+## Web arayüzü
+
+```powershell
+python -m ozetleyici.web
+```
+
+Tarayıcı kendiliğinden `http://127.0.0.1:8765` adresini açar. Dosyayı sürükle-bırak, uzunluğu ve taranmış
+sayfaların nasıl okunacağını seç, **Özetle**'ye bas. Özet yazıldıkça görünür; bitince kopyalayabilir veya
+JSON olarak indirebilirsin. Durdurmak için terminalde Ctrl+C.
+
+## Komut satırı
 
 ```powershell
 python -m ozetleyici belge.pdf                       # orta uzunlukta özet, belge.ozet.json
@@ -48,6 +81,7 @@ python -m ozetleyici --help                          # tüm seçenekler
 | `--temperature` (0-2), `--top-p` (0.01-1) | Örnekleme ayarları; verilmezse API'ye gönderilmez |
 | `--max-token` | Cevaptaki en fazla token (varsayılan 1024). Düşünen modellerde (ör. Claude) 4096 önerilir |
 | `--akissiz` | Akış (streaming) yerine tek seferde cevap |
+| `--ocr` | `yerel` (Tesseract, varsayılan), `gemini` (görüntü sağlayıcıya gider), `kapali` |
 | `--yine-de-gonder` | Belgede kişisel veri ipucu olsa bile gönder (aşağıya bak) |
 | `-s, --sessiz` | Bilgi mesajlarını gizle |
 
@@ -75,6 +109,31 @@ IBAN, e-posta ve cep telefonu arar; bulursa **göndermeden durur** (çıkış ko
   veya dosyanın tam yolu yazılmaz. Özet dosyaları (`*.ozet.json`) da `.gitignore`'dadır, çünkü
   belgedeki bilgileri içerebilir.
 
+**Web arayüzü.**
+
+- Yalnızca `127.0.0.1` adresinde dinler; aynı ağdaki başka bilgisayarlar erişemez. Uygulamada kullanıcı girişi
+  olmadığı için bu bilinçli bir karar: ağa açılsa başkası senin API anahtarınla özet yaptırabilirdi.
+- Her açılışta rastgele bir oturum anahtarı üretilir; API bu anahtar olmadan çalışmaz. Böylece açık olan başka
+  bir web sitesi tarayıcın üzerinden uygulamaya istek gönderemez (CSRF). `Host` başlığı da denetlenir
+  (DNS rebinding'e karşı).
+- Sıkı Content-Security-Policy; sayfada yalnızca uygulamanın kendi betiği çalışır. Belgeden veya modelden gelen
+  metin sayfaya HTML olarak değil düz metin olarak yazılır (XSS'e karşı).
+- Yüklenen dosya **diske yazılmaz**, yalnızca bellekte işlenir; en fazla 25 MB. Aynı anda tek belge işlenir.
+
+**Kötü niyetli dosyalara karşı.**
+
+- Dosyanın gerçek türü ilk baytlarından denetlenir; `.pdf` uzantılı bir zip reddedilir.
+- Word, Excel ve PowerPoint aslında zip arşividir; açıldığında 200 MB'ı aşan veya aşırı sıkıştırılmış dosyalar
+  (zip bombası) ve şüpheli iç yollar reddedilir. Excel XML'i `defusedxml` ile güvenli ayrıştırılır.
+- 40 milyon pikselden büyük görseller (piksel bombası) reddedilir; OCR en fazla 30 sayfa yapar.
+- Görünmez Unicode karakterler (sıfır genişlikli boşluk, yön değiştirme işaretleri), Word'deki gizli yazılar ve
+  Excel'deki gizli sayfalar modele gönderilmez: bunlar belgeye okurun göremeyeceği talimat saklamanın yollarıdır.
+- Excel makroları hiçbir zaman yüklenmez veya çalıştırılmaz.
+
+**Model ile OCR'ın bir bedeli var.** `gemini` kipinde taranmış sayfanın görüntüsü, kişisel veri kontrolünden
+**önce** sağlayıcıya gider (metni ancak okuduktan sonra kontrol edebiliriz). Kişisel veri içerebilecek taramalar
+için yerel Tesseract'ı kullan.
+
 **Belgedeki talimatlar.** Belge `<belge>` etiketleri arasında gönderilir ve modele belgedeki talimatları
 uygulamaması söylenir. Bu, prompt injection'a karşı yalnızca ilk savunma hattıdır; tam koruma değildir.
 
@@ -101,7 +160,9 @@ uygulamaması söylenir. Bu, prompt injection'a karşı yalnızca ilk savunma ha
 
 ## Nasıl çalışır
 
-1. `okuyucu.py` dosyayı okur: PDF için `pypdf`, metin için önce UTF-8, olmazsa Windows Türkçe kodlaması (cp1254).
+1. `okuyucular/` paketi dosyayı türüne göre okur (yukarıdaki tablo). Taranmış PDF sayfaları `pypdfium2` ile
+   görüntüye çevrilip OCR'a verilir. Excel'de toplam/ortalama gibi hesaplar Python'da yapılır, çünkü LLM'ler
+   sayılarla güvenilmezdir.
 2. `gizlilik.py` metinde kişisel veri ipucu arar.
 3. Metin ~12.000 karakterden uzunsa paragraf sınırlarından parçalanır; her parçadan **ayrıntılı not**
    çıkarılır, sonra notlar istenen uzunlukta tek özete birleştirilir (map-reduce).
@@ -111,6 +172,7 @@ uygulamaması söylenir. Bu, prompt injection'a karşı yalnızca ilk savunma ha
    - Token sınırında kesilen, boş veya filtrelenen cevabı kabul etmez.
    - Akış yarıda koparsa ekrandaki yarım metnin geçersiz olduğunu söyleyip baştan alır.
 5. `cikti.py` sonucu token ve maliyet bilgisiyle UTF-8 JSON olarak yazar.
+6. `web/` aynı çekirdeği FastAPI ile sunar; özet satır satır JSON olayları (NDJSON) olarak tarayıcıya akar.
 
 ## Testler
 
@@ -134,7 +196,8 @@ pahalı; Türkçe eklerin etkisi.
 
 ## Bilinen sınırlar
 
-- Taranmış (görüntü) PDF'lerden metin çıkmaz; OCR yok.
+- OCR kalitesi taramanın kalitesine bağlıdır; model ile OCR'da model okuyamadığı yeri tahmin edebilir.
+- Excel'de formül sonuçları dosyada kayıtlı değilse (dosya Excel'de hiç açılıp kaydedilmediyse) hücreler boş görünür.
 - Kişisel veri kontrolü isim, adres ve plaka gibi verileri yakalamaz.
 - Gemini dışındaki sağlayıcılar yalnızca sahte sunucuyla test edildi.
 - Yedek model kullanıldığında maliyet, ana modelin fiyatıyla yaklaşık hesaplanır.
