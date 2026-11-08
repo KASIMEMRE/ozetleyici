@@ -9,15 +9,15 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import ayarlar as ayarlar_modulu
-from .ayarlar import AyarHatasi, anahtari_gizle, ayarlari_yukle
+from .ayarlar import WHISPER_MODELLERI, AyarHatasi, anahtari_gizle, ayarlari_yukle, whisper_modeli
 from .cikti import json_yaz
 from .gizlilik import kisisel_veri_ipuclari
-from .llm import LLMHatasi, LLMIstemcisi, UretimAyarlari
+from .llm import ButceAsildi, IstekButcesi, LLMHatasi, LLMIstemcisi, UretimAyarlari
 from .okuyucu import OcrAyari, OkumaHatasi, belge_dosyasini_oku
-from .ozetle import UZUNLUKLAR, ozetle
+from .ozetle import EN_UZUN_ODAK, UZUNLUKLAR, gereken_istek_sayisi, ozetle
 
 # Çıkış kodları: başka programlar ve CI bunlara bakar.
-BASARILI, HATA, KISISEL_VERI, IPTAL = 0, 1, 3, 130
+BASARILI, HATA, KISISEL_VERI, BUTCE, IPTAL = 0, 1, 3, 4, 130
 
 SEVIYE_ADLARI = {"INFO": "bilgi", "WARNING": "uyarı", "ERROR": "hata", "DEBUG": "ayrıntı"}
 
@@ -45,10 +45,13 @@ def arguman_ayristirici() -> argparse.ArgumentParser:
         prog="ozetleyici",
         description="PDF veya metin dosyasını LLM ile özetleyip JSON olarak kaydeder.",
     )
-    p.add_argument("dosya", type=Path, help="Özetlenecek .pdf, .txt veya .md dosyası")
+    p.add_argument("dosya", type=Path, nargs="?", help="Özetlenecek belge, görsel, ses veya video dosyası")
+    p.add_argument("--modelleri-listele", action="store_true",
+                   help="Anahtarının erişebildiği özet modellerini listele ve çık (istek bütçesinden düşmez)")
     p.add_argument("-o", "--cikti", type=Path, help="JSON çıktı yolu (varsayılan: <dosya>.ozet.json)")
     p.add_argument("-u", "--uzunluk", choices=list(UZUNLUKLAR), default="orta",
                    help="Özet uzunluğu (varsayılan: orta)")
+    p.add_argument("--odak", help=f"Özet neye ağırlık versin (ör. 'yaptırımlar ve süreler'), en fazla {EN_UZUN_ODAK} karakter")
     p.add_argument("--model", help="Model adını .env'dekinin yerine bu çalıştırma için değiştir")
     p.add_argument("--temperature", type=_aralik("temperature", 0, 2),
                    help="Rastgelelik, 0-2 arası (verilmezse gönderilmez)")
@@ -61,6 +64,12 @@ def arguman_ayristirici() -> argparse.ArgumentParser:
                    help="Belgede kişisel veri ipucu bulunsa bile sağlayıcıya gönder")
     p.add_argument("--ocr", choices=["yerel", "gemini", "kapali"], default="yerel",
                    help="Taranmış sayfa/görsel okuma: yerel Tesseract (varsayılan), gemini (görüntü sağlayıcıya gider), kapali")
+    p.add_argument("--ses", choices=["yerel", "gemini"], default="yerel",
+                   help="Ses/video yazıya dökme: yerel Whisper (varsayılan, ses bilgisayardan çıkmaz) veya gemini")
+    p.add_argument("--whisper-modeli", choices=WHISPER_MODELLERI,
+                   help="Yerel konuşma tanıma modeli (varsayılan .env'deki WHISPER_MODELI veya small)")
+    p.add_argument("--istek-siniri", type=_aralik("istek-siniri", 1, 1000, int),
+                   help="Bu belge için en fazla API isteği (varsayılan .env'deki LLM_EN_FAZLA_ISTEK veya 20)")
     p.add_argument("-s", "--sessiz", action="store_true", help="Bilgi mesajlarını gösterme")
     return p
 
@@ -81,9 +90,26 @@ def _ocr_bilgisi(okuma, istemci) -> dict:
         "okuma_notlari": okuma.notlar,
         "ocr_sayfa_sayisi": okuma.ocr_sayfa_sayisi,
         "saglayiciya_gonderilen_gorsel": okuma.disari_gonderilen_gorsel,
-        "ocr_girdi_token": getattr(istemci, "ocr_girdi_token", 0),
-        "ocr_cikti_token": getattr(istemci, "ocr_cikti_token", 0),
+        "ses_suresi_sn": okuma.ses_suresi_sn,
+        "saglayiciya_gonderilen_ses_parcasi": okuma.disari_gonderilen_ses_parcasi,
+        "kullanilan_istek": istemci.butce.kullanilan if getattr(istemci, "butce", None) else None,
+        "saglayiciya_giden_karakter": len(okuma.metin),
     }
+
+
+def _modelleri_yazdir() -> int:
+    from .modeller import ozet_modelleri
+    try:
+        ayarlar = ayarlari_yukle()
+        modeller = ozet_modelleri(LLMIstemcisi(ayarlar).modelleri_listele(), ayarlar.model)
+    except (AyarHatasi, LLMHatasi) as hata:
+        print(f"[hata] {hata}", file=sys.stderr)
+        return HATA
+    for ad in modeller:
+        print(f"{ad}  (varsayılan)" if ad == ayarlar.model else ad)
+    print("\nHangi modellerin ücretsiz katmanda açık olduğunu https://aistudio.google.com/rate-limit sayfasında görebilirsin.")
+    print("Bir modeli denemek için: python -m ozetleyici belge.pdf --model <ad>")
+    return BASARILI
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,11 +118,18 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(akis, "reconfigure"):
             akis.reconfigure(encoding="utf-8")
 
-    args = arguman_ayristirici().parse_args(argv)
+    ayristirici = arguman_ayristirici()
+    args = ayristirici.parse_args(argv)
     _logging_kur(args.sessiz)
     # .env'i en başta yükle: TESSERACT_YOLU gibi ayarlar, API ayarlarından önce
     # (dosya okunurken) gerekiyor.
     ayarlar_modulu.load_dotenv()
+    if args.modelleri_listele:
+        return _modelleri_yazdir()
+    if args.dosya is None:
+        ayristirici.error("dosya gerekli (ya da --modelleri-listele kullan)")
+    if args.odak and len(args.odak) > EN_UZUN_ODAK:
+        ayristirici.error(f"--odak en fazla {EN_UZUN_ODAK} karakter olabilir")
     log = logging.getLogger("ozetleyici")
     hedef = args.cikti or args.dosya.with_suffix(".ozet.json")
     anahtar: str | None = None
@@ -104,17 +137,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         istemci = None
         ayarlar = None
-        ocr = OcrAyari(kip=args.ocr)
-        if args.ocr == "gemini":
+        butce: IstekButcesi | None = None
+        model_adi = args.whisper_modeli or whisper_modeli()
+        ocr = OcrAyari(kip=args.ocr, ses_kipi=args.ses, whisper_modeli=model_adi)
+        if args.ocr == "gemini" or args.ses == "gemini":
             # Görüntüyü okumak için istemci önce gerekli. Dikkat: görüntü, kişisel veri
             # kontrolünden ÖNCE sağlayıcıya gider (metni ancak okuduktan sonra kontrol edebiliriz).
             ayarlar = ayarlari_yukle()
             anahtar = ayarlar.api_anahtari
             if args.model:
                 ayarlar = replace(ayarlar, model=args.model)
-            istemci = LLMIstemcisi(ayarlar)
-            ocr = OcrAyari(kip="gemini", gorsel_okuyucu=istemci.gorseli_metne_cevir)
-            log.warning("Gemini OCR: taranmış sayfalar/görseller kişisel veri kontrolünden önce sağlayıcıya gönderilecek.")
+            butce = IstekButcesi(args.istek_siniri or ayarlar.istek_siniri)
+            istemci = LLMIstemcisi(ayarlar, butce=butce)
+            ocr = OcrAyari(kip=args.ocr, ses_kipi=args.ses, whisper_modeli=model_adi,
+                           gorsel_okuyucu=istemci.gorseli_metne_cevir, ses_okuyucu=istemci.sesi_metne_cevir,
+                           on_kontrol=butce.on_kontrol)
+            log.warning("Model ile okuma seçildi: görüntü/ses, kişisel veri kontrolünden önce sağlayıcıya gönderilecek.")
 
         okuma = belge_dosyasini_oku(args.dosya, ocr)
         metin = okuma.metin
@@ -138,7 +176,10 @@ def main(argv: list[str] | None = None) -> int:
             anahtar = ayarlar.api_anahtari
             if args.model:
                 ayarlar = replace(ayarlar, model=args.model)
-            istemci = LLMIstemcisi(ayarlar)
+            butce = IstekButcesi(args.istek_siniri or ayarlar.istek_siniri)
+            istemci = LLMIstemcisi(ayarlar, butce=butce)
+        # Özete başlamadan önce kaç istek gerekeceğine bak; sınırı aşıyorsa hiç başlama.
+        butce.on_kontrol(gereken_istek_sayisi(metin))
         uretim = UretimAyarlari(temperature=args.temperature, top_p=args.top_p, max_token=args.max_token)
 
         log.info("%s: %s karakter okundu. Model: %s", args.dosya.name, f"{len(metin):,}", ayarlar.model)
@@ -156,10 +197,16 @@ def main(argv: list[str] | None = None) -> int:
             girdi_fiyati=ayarlar.girdi_fiyati, cikti_fiyati=ayarlar.cikti_fiyati,
             parca_gelince=None if args.akissiz else yazdir,
             akis_sifirlandi=None if args.akissiz else sifirlandi,
+            okuma_girdi_token=getattr(istemci, "okuma_girdi_token", 0),
+            okuma_cikti_token=getattr(istemci, "okuma_cikti_token", 0),
+            odak=args.odak,
         )
         if args.akissiz:
             print(sonuc.ozet)
         json_yaz(sonuc, args.dosya, hedef, ek=_ocr_bilgisi(okuma, istemci))
+    except ButceAsildi as hata:
+        print(f"\n[durdu] {hata}", file=sys.stderr)
+        return BUTCE
     except (OkumaHatasi, AyarHatasi, LLMHatasi, ValueError, OSError) as hata:
         print(f"\n[hata] {anahtari_gizle(str(hata), anahtar)}", file=sys.stderr)
         return HATA

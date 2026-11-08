@@ -10,75 +10,160 @@
 </head>
 <body>
   <header class="ust">
-    <div class="marka">
-      <span class="logo" aria-hidden="true">Ö</span>
-      <div>
-        <h1>Belge Özetleyici</h1>
-        <p class="alt">PDF, Word, Excel, PowerPoint ve görsel belgeleri özetler</p>
-      </div>
+    <h1>Belge Özetleyici</h1>
+    <div class="ust-sag">
+      <label class="model-sec" for="model">
+        <span>Model</span>
+        <select id="model" disabled><option>yükleniyor…</option></select>
+      </label>
+      <span id="durum" class="durum" role="status">Bağlanıyor…</span>
     </div>
-    <div id="durum" class="durum" role="status">Bağlanıyor…</div>
   </header>
 
-  <main class="izgara">
-    <section class="kart" aria-labelledby="belge-baslik">
-      <h2 id="belge-baslik">Belge</h2>
-
+  <main class="duzen">
+    <section class="calisma" aria-label="Dosya ve ayarlar">
       <label id="birak" class="birak" for="dosya">
-        <input id="dosya" type="file" hidden>
-        <span class="birak-ikon" aria-hidden="true">⇪</span>
-        <span id="birak-metin" class="birak-metin">Dosyayı buraya sürükle ya da <u>seç</u></span>
-        <span id="birak-alt" class="birak-alt">En fazla 25 MB</span>
+        <input id="dosya" type="file" class="gizli-girdi">
+        <span id="birak-bos" class="birak-bos">
+          <span class="birak-metin">Dosya seç veya buraya sürükle</span>
+          <span id="birak-alt" class="birak-alt">PDF, Word, Excel, PowerPoint, görsel, ses ve video</span>
+        </span>
+        <span id="birak-dolu" class="birak-dolu" hidden>
+          <span id="dosya-tur" class="tur-rozeti">PDF</span>
+          <span class="dosya-bilgi">
+            <span id="dosya-ad" class="dosya-ad"></span>
+            <span id="dosya-boyut" class="dosya-boyut"></span>
+          </span>
+          <span class="degistir">Değiştir</span>
+        </span>
       </label>
 
-      <fieldset class="secenek">
-        <legend>Özet uzunluğu</legend>
+      <fieldset class="alan">
+        <legend class="alan-ad">Uzunluk</legend>
         <div class="segment">
           <label><input type="radio" name="uzunluk" value="kisa"><span>Kısa</span></label>
           <label><input type="radio" name="uzunluk" value="orta" checked><span>Orta</span></label>
-          <label><input type="radio" name="uzunluk" value="uzun"><span>Uzun</span></label>
+          <label><input type="radio" name="uzunluk" value="uzun"><span>Ayrıntılı</span></label>
         </div>
       </fieldset>
 
-      <fieldset class="secenek">
-        <legend>Taranmış sayfalar ve görseller</legend>
-        <label class="radyo"><input type="radio" name="ocr" value="yerel" checked>
-          <span><b>Yerel okuma</b> <small>Tesseract · görüntü bilgisayardan çıkmaz</small>
-          <small id="tesseract-uyari" class="uyari-yazi" hidden>Tesseract kurulu değil (README'ye bak)</small></span></label>
-        <label class="radyo"><input type="radio" name="ocr" value="gemini">
-          <span><b>Model ile okuma</b> <small>daha iyi okur · görüntü LLM sağlayıcısına gönderilir</small></span></label>
-        <label class="radyo"><input type="radio" name="ocr" value="kapali">
-          <span><b>Kapalı</b> <small>yalnızca metin içeren sayfalar</small></span></label>
+      <label class="alan" for="odak">
+        <span class="alan-ad">Odak</span>
+        <input id="odak" class="metin-girdi" type="text" maxlength="300" autocomplete="off"
+               placeholder="İsteğe bağlı, ör. teslim tarihleri">
+      </label>
+
+      <fieldset id="ocr-ayar" class="alan" hidden>
+        <legend class="alan-ad">Taranmış sayfalar</legend>
+        <label class="secim"><input type="radio" name="ocr" value="yerel" checked>
+          <span><b>Bu bilgisayarda oku</b><small>Tesseract ile; görüntü dışarı çıkmaz</small>
+          <small id="tesseract-uyari" class="uyari-yazi" hidden>Tesseract kurulu değil. README'deki adımlarla kurabilirsin.</small></span></label>
+        <label class="secim"><input type="radio" name="ocr" value="gemini">
+          <span><b>Model okusun</b><small>Daha iyi okur; sayfa görüntüsü sağlayıcıya gider</small></span></label>
+        <label class="secim"><input type="radio" name="ocr" value="kapali">
+          <span><b>Okuma</b><small>Yalnızca metin içeren sayfalar özetlenir</small></span></label>
       </fieldset>
 
-      <button id="ozetle" class="dugme" type="button" disabled>Özetle</button>
-      <p class="gizlilik">Belge diske kaydedilmez. Metni, özet için LLM sağlayıcısına gönderilir; kişisel veri ipucu görülürse önce sana sorulur.</p>
+      <fieldset id="ses-ayar" class="alan" hidden>
+        <legend class="alan-ad">Konuşmayı yazıya dökme</legend>
+        <label class="secim"><input type="radio" name="ses" value="yerel" checked>
+          <span><b>Bu bilgisayarda</b><small>Whisper ile; ses dışarı çıkmaz, ilk seferde model indirilir</small>
+          <small id="whisper-uyari" class="uyari-yazi" hidden>faster-whisper kurulu değil. pip install -r requirements.txt</small></span></label>
+        <label class="secim"><input type="radio" name="ses" value="gemini">
+          <span><b>Model yazsın</b><small>Hızlı; ses kaydı sağlayıcıya gider</small></span></label>
+      </fieldset>
+
+      <button id="ozetle" class="birincil" type="button" disabled>Özetle</button>
+
+      <section id="gecmis" class="gecmis" aria-labelledby="gecmis-baslik" hidden>
+        <h2 id="gecmis-baslik">Son özetler</h2>
+        <ol id="gecmis-liste" class="gecmis-liste"></ol>
+        <p class="ince">Sayfa kapanınca silinir.</p>
+      </section>
     </section>
 
-    <section class="kart" aria-labelledby="ozet-baslik" aria-live="polite">
-      <div class="kart-ust">
-        <h2 id="ozet-baslik">Özet</h2>
+    <section class="okuma" aria-label="Sonuç">
+      <div class="okuma-ust">
+        <div class="sekmeler" role="tablist" aria-label="Görünüm">
+          <button id="sekme-ozet" role="tab" aria-selected="true" aria-controls="panel-ozet" type="button">Özet</button>
+          <button id="sekme-kaynak" role="tab" aria-selected="false" aria-controls="panel-kaynak" type="button" tabindex="-1" disabled>Kaynak metin</button>
+        </div>
         <div class="eylemler">
           <button id="kopyala" class="ikincil" type="button" disabled>Kopyala</button>
-          <button id="indir" class="ikincil" type="button" disabled>JSON indir</button>
+          <div class="indir">
+            <button id="indir" class="ikincil" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="indir-menu" disabled>İndir</button>
+            <div id="indir-menu" class="menu" role="menu" hidden>
+              <button role="menuitem" type="button" data-bicim="md">Markdown (.md)</button>
+              <button role="menuitem" type="button" data-bicim="txt">Düz metin (.txt)</button>
+              <button role="menuitem" type="button" data-bicim="json">Tüm bilgiler (.json)</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div id="kisisel" class="kisisel" hidden>
+      <div id="ilerleme" class="ilerleme" hidden>
+        <ol class="asamalar" aria-label="İlerleme">
+          <li data-asama="okuma">Okunuyor</li>
+          <li data-asama="ozet">Özetleniyor</li>
+        </ol>
+        <span id="sure" class="sure" aria-live="off">0 sn</span>
+        <button id="durdur" class="ikincil" type="button">Durdur</button>
+        <p id="son-bilgi" class="son-bilgi" aria-live="polite"></p>
+      </div>
+
+      <div id="uyari-kisisel" class="uyari" role="alert" hidden>
         <p><b>Belgede kişisel veri olabilir:</b> <span id="kisisel-liste"></span></p>
-        <p>Ücretsiz LLM katmanlarında gönderilen içerik model geliştirmede kullanılabilir ve insanlar tarafından okunabilir.</p>
+        <p>Henüz bir şey gönderilmedi. Ücretsiz katmanda gönderilen içerik Google tarafından model geliştirmede kullanılabilir.</p>
         <div class="eylemler">
-          <button id="yine-de" class="dugme tehlike" type="button">Bilerek gönder</button>
-          <button id="vazgec" class="ikincil" type="button">Vazgeç</button>
+          <button id="kisisel-gonder" class="birincil dikkat" type="button">Yine de gönder</button>
+          <button id="kisisel-vazgec" class="ikincil" type="button">Vazgeç</button>
         </div>
       </div>
 
-      <ul id="notlar" class="notlar"></ul>
-      <div id="ozet" class="ozet bos"><span>Bir belge seçip <b>Özetle</b>'ye bas.</span></div>
+      <div id="uyari-butce" class="uyari" role="alert" hidden>
+        <p><b>Bu belge <span id="butce-gereken"></span> istek gerektiriyor;</b> belge başına sınır <span id="butce-sinir"></span>.</p>
+        <p>Henüz bir şey gönderilmedi. Ücretli katmanda her istek ücretlendirilir.</p>
+        <div class="eylemler">
+          <button id="butce-devam" class="birincil dikkat" type="button">Devam et</button>
+          <button id="butce-vazgec" class="ikincil" type="button">Vazgeç</button>
+        </div>
+      </div>
+
       <p id="hata" class="hata" role="alert" hidden></p>
-      <dl id="olcum" class="olcum" hidden></dl>
+
+      <article id="panel-ozet" class="panel" role="tabpanel" aria-labelledby="sekme-ozet" aria-live="polite">
+        <div id="ozet" class="ozet">
+          <p class="bos-durum">Bir dosya seç, özet burada görünür.</p>
+        </div>
+      </article>
+      <div id="panel-kaynak" class="panel" role="tabpanel" aria-labelledby="sekme-kaynak" hidden>
+        <p id="kaynak-bilgi" class="ince"></p>
+        <pre id="kaynak" class="kaynak" tabindex="0"></pre>
+      </div>
+
+      <details id="notlar-kutu" class="notlar-kutu" hidden>
+        <summary>Okuma notları (<span id="not-sayisi">0</span>)</summary>
+        <ul id="notlar" class="notlar"></ul>
+      </details>
+
+      <section id="iz" class="iz" aria-labelledby="iz-baslik" hidden>
+        <h2 id="iz-baslik">Nereye gitti?</h2>
+        <div class="iz-alan">
+          <div class="iz-yerel">
+            <h3>Bilgisayarda kaldı</h3>
+            <ul id="iz-yerel"></ul>
+          </div>
+          <div class="iz-disari">
+            <h3>Modele gönderildi</h3>
+            <ul id="iz-disari"></ul>
+          </div>
+        </div>
+        <dl id="olcum" class="olcum"></dl>
+      </section>
     </section>
   </main>
-  <footer class="alt-bilgi">Belge Özetleyici {{SURUM}} · yalnızca bu bilgisayardan erişilir</footer>
+
+  <footer class="alt-bilgi">Sürüm {{SURUM}}</footer>
+  <div id="birakma-katmani" class="birakma-katmani" hidden><p>Dosyayı bırak</p></div>
 </body>
 </html>

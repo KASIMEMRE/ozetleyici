@@ -12,6 +12,7 @@ def word_oku(veri: bytes, ad: str) -> OkumaSonucu:
     zip_guvenligini_dogrula(veri, ad)
     try:
         from docx import Document
+        from docx.text.hyperlink import Hyperlink
         belge = Document(io.BytesIO(veri))
     except Exception as hata:  # python-docx bozuk dosyada farklı hatalar fırlatabilir
         raise OkumaHatasi(f"{ad}: Word dosyası açılamadı ({type(hata).__name__}).") from hata
@@ -20,17 +21,25 @@ def word_oku(veri: bytes, ad: str) -> OkumaSonucu:
     gizli = 0
     parcalar: list[str] = []
 
-    def paragraf_metni(paragraf) -> str:
+    def run_metni(run) -> str:
         nonlocal gizli
+        # "Gizli" biçimli yazı Word'de görünmez ama dosyada durur. Modele göndermiyoruz:
+        # okurun göremediği bir talimat saklamanın klasik yolu.
+        if run.font.hidden:
+            gizli += 1
+            return ""
+        return run.text
+
+    def paragraf_metni(paragraf) -> str:
+        # paragraph.runs köprülerin (hyperlink) içindeki yazıyı içermez;
+        # iter_inner_content() hem düz yazıyı hem köprüleri belgedeki sırasıyla verir.
         yazilar = []
-        for run in paragraf.runs:
-            # "Gizli" biçimli yazı Word'de görünmez ama dosyada durur. Modele göndermiyoruz:
-            # okurun göremediği bir talimat saklamanın klasik yolu.
-            if run.font.hidden:
-                gizli += 1
-                continue
-            yazilar.append(run.text)
-        return "".join(yazilar) if paragraf.runs else paragraf.text
+        for parca in paragraf.iter_inner_content():
+            if isinstance(parca, Hyperlink):
+                yazilar.extend(run_metni(r) for r in parca.runs)
+            else:
+                yazilar.append(run_metni(parca))
+        return "".join(yazilar)
 
     for bolum in belge.sections:
         for p in bolum.header.paragraphs:
@@ -64,20 +73,28 @@ def powerpoint_oku(veri: bytes, ad: str) -> OkumaSonucu:
     zip_guvenligini_dogrula(veri, ad)
     try:
         from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
         sunum = Presentation(io.BytesIO(veri))
     except Exception as hata:
         raise OkumaHatasi(f"{ad}: PowerPoint dosyası açılamadı ({type(hata).__name__}).") from hata
 
     parcalar: list[str] = []
     notlu = 0
-    for sira, slayt in enumerate(sunum.slides, start=1):
-        satirlar = [f"## Slayt {sira}"]
-        for sekil in slayt.shapes:
+    def sekilleri_oku(sekiller, satirlar: list[str], derinlik: int = 0) -> None:
+        for sekil in sekiller:
+            # Gruplanmış şekiller kendi içinde şekil listesi taşır; içine in (iç içe gruplar dahil).
+            if sekil.shape_type == MSO_SHAPE_TYPE.GROUP and derinlik < 20:
+                sekilleri_oku(sekil.shapes, satirlar, derinlik + 1)
+                continue
             if getattr(sekil, "has_text_frame", False) and sekil.text_frame.text.strip():
                 satirlar.append(sekil.text_frame.text.strip())
             if getattr(sekil, "has_table", False):
                 for satir in sekil.table.rows:
                     satirlar.append("| " + " | ".join(h.text.strip().replace("|", "/") for h in satir.cells) + " |")
+
+    for sira, slayt in enumerate(sunum.slides, start=1):
+        satirlar = [f"## Slayt {sira}"]
+        sekilleri_oku(slayt.shapes, satirlar)
         if slayt.has_notes_slide:
             not_metni = slayt.notes_slide.notes_text_frame.text.strip()
             if not_metni:

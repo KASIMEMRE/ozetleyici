@@ -21,11 +21,13 @@ class OkumaSonucu:
     notlar: list[str] = field(default_factory=list)  # kullanıcıya gösterilecek bilgiler
     ocr_sayfa_sayisi: int = 0
     disari_gonderilen_gorsel: int = 0                # Gemini ile okunan görsel sayısı
+    ses_suresi_sn: float = 0.0
+    disari_gonderilen_ses_parcasi: int = 0           # Gemini'ye gönderilen 5 dakikalık ses parçası
 
 
 @dataclass(frozen=True)
 class OcrAyari:
-    """Taranmış sayfaların ve görsellerin nasıl okunacağı.
+    """Taranmış sayfaların, görsellerin ve ses/video kayıtlarının nasıl okunacağı.
 
     kip: "yerel"  -> Tesseract, görüntü bilgisayardan çıkmaz
          "gemini" -> görüntü LLM sağlayıcısına gönderilir (daha iyi okur)
@@ -37,10 +39,21 @@ class OcrAyari:
     # Gemini kipinde: (png baytları) -> metin. LLM istemcisi tarafından sağlanır.
     gorsel_okuyucu: Callable[[bytes], str] | None = None
     en_fazla_sayfa: int = 30
+    # Sağlayıcıya istek göndermeden önce kaç istek gerekeceğini bildirir;
+    # bütçeyi aşıyorsa hata fırlatıp işi başlamadan durdurur.
+    on_kontrol: Callable[[int], None] | None = None
+    # Ses ve video: "yerel" -> faster-whisper (ses bilgisayardan çıkmaz), "gemini" -> sağlayıcıya gönderilir
+    ses_kipi: str = "yerel"
+    ses_okuyucu: Callable[[bytes], str] | None = None          # Gemini kipinde: WAV baytları -> metin
+    transkriptor: Callable[[bytes, str], str] | None = None    # yerel kipte yerine geçecek fonksiyon (testler)
+    whisper_modeli: str = "small"
+    en_uzun_ses_sn: int = 3600
 
     def __post_init__(self) -> None:
         if self.kip not in ("yerel", "gemini", "kapali"):
             raise ValueError(f"Geçersiz OCR kipi: {self.kip}")
+        if self.ses_kipi not in ("yerel", "gemini"):
+            raise ValueError(f"Geçersiz ses kipi: {self.ses_kipi}")
 
 
 # ---------------------------------------------------------------- metin temizliği

@@ -16,20 +16,27 @@ AYAR = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="s
 
 
 class SahteIstemci:
-    def __init__(self, ayarlar):
+    def __init__(self, ayarlar, butce=None):
         self.model = ayarlar.model
-        self.ocr_girdi_token = 0
-        self.ocr_cikti_token = 0
+        self.butce = butce
+        self.okuma_girdi_token = 0
+        self.okuma_cikti_token = 0
         self.gorseller = []
 
     def tamamla(self, sistem, kullanici, uretim, parca_gelince=None, akis_sifirlandi=None):
+        if self.butce:
+            self.butce.harca()
         for p in ("Uzaktan ", "çalışma ", "özeti"):
-            parca_gelince(p)
+            if parca_gelince:
+                parca_gelince(p)
         return LLMCevabi("Uzaktan çalışma özeti", 40, 6, 1, model=self.model)
+
+    def modelleri_listele(self):
+        return ["sahte-model", "gemini-buyuk-pro", "gemini-hizli-flash", "gemini-embedding-001"]
 
     def gorseli_metne_cevir(self, png):
         self.gorseller.append(png)
-        self.ocr_girdi_token += 100
+        self.okuma_girdi_token += 100
         return "Görüntüden okunan metin"
 
 
@@ -92,11 +99,11 @@ def test_gemini_ocr_gorseli_saglayiciya_gonderir():
     from PIL import Image
     tampon = io.BytesIO(); Image.new("RGB", (300, 100), "white").save(tampon, format="PNG")
     olusan = []
-    def fabrika(a):
-        olusan.append(SahteIstemci(a)); return olusan[-1]
+    def fabrika(a, **k):
+        olusan.append(SahteIstemci(a, **k)); return olusan[-1]
     o = olaylar(gonder(istemci(fabrika=fabrika), tampon.getvalue(), ad="fis.png", ocr="gemini"))
     assert o[-1]["tip"] == "bitti"
-    assert o[-1]["sonuc"]["saglayiciya_gonderilen_gorsel"] == 1 and o[-1]["sonuc"]["ocr_girdi_token"] == 100
+    assert o[-1]["sonuc"]["saglayiciya_gonderilen_gorsel"] == 1 and o[-1]["sonuc"]["okuma_girdi_token"] == 100
     assert len(olusan) == 1 and len(olusan[0].gorseller) == 1  # tek istemci, OCR + özet
 
 
@@ -109,11 +116,13 @@ def test_okuma_hatasi_olay_olarak_doner():
 
 def test_kisisel_veri_varsa_saglayiciya_gitmeden_sorar():
     olusan = []
-    o = olaylar(gonder(istemci(fabrika=lambda a: olusan.append(1) or SahteIstemci(a)),
+    o = olaylar(gonder(istemci(fabrika=lambda a, **k: olusan.append(1) or SahteIstemci(a, **k)),
                        "Müşteri: ayse@example.com".encode()))
     assert o[-1] == {"tip": "kisisel_veri", "bulgular": {"e-posta": 1}}
     assert olusan == []  # istemci hiç oluşturulmadı: sağlayıcıya istek gitmedi
-    assert "ayse@" not in json.dumps(o, ensure_ascii=False)
+    # Uyarının kendisi değeri içermez (yalnızca tür ve adet). Okunan metin "kaynak" olayıyla
+    # yalnızca bu bilgisayardaki tarayıcıya gider; kullanıcı neyin bulunduğunu görebilsin diye.
+    assert "ayse@" not in json.dumps(o[-1], ensure_ascii=False)
 
 
 def test_kullanici_onaylarsa_gonderilir():
@@ -218,4 +227,220 @@ def test_yuklenen_dosya_diske_yazilmaz(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "SpooledTemporaryFile", lambda *a, **k: acilan.append(1) or gercek(*a, **k))
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda *a, **k: acilan.append(1) or (_ for _ in ()).throw(AssertionError("diske yazma")))
     o = olaylar(gonder(istemci(), b"x " * (2 * 1024 * 1024)))  # 4 MB: multipart olsaydı diske taşardı
-    assert acilan == [] and o[-1]["tip"] in ("bitti", "hata")
+    assert acilan == [] and o[-1]["tip"] in ("bitti", "hata", "onay_gerekli")
+
+
+
+# ------------------------------------------------------------------ bütçe ve iptal
+
+UZUN = "\n\n".join(["Uzun bir paragraf. " * 300] * 30).encode()  # ~16 istek
+
+
+def test_butce_asilinca_onay_istenir_ve_istek_gitmez():
+    olusan = []
+    ayar = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="m", istek_siniri=5)
+    o = olaylar(gonder(istemci(ayar_yukleyici=lambda: ayar,
+                               fabrika=lambda a, **k: olusan.append(1) or SahteIstemci(a, **k)), UZUN))
+    assert o[-1]["tip"] == "onay_gerekli" and o[-1]["sinir"] == 5 and o[-1]["gereken"] > 5
+    assert olusan == []
+
+
+def test_onaydan_sonra_yukseltilmis_sinirla_devam():
+    ayar = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="m", istek_siniri=5)
+    c = istemci(ayar_yukleyici=lambda: ayar)
+    gereken = olaylar(gonder(c, UZUN))[-1]["gereken"]
+    o = olaylar(gonder(c, UZUN, istek_siniri=str(gereken)))
+    assert o[-1]["tip"] == "bitti" and o[-1]["sonuc"]["kullanilan_istek"] == gereken
+
+
+def test_gecersiz_istek_siniri():
+    assert gonder(istemci(), b"m", istek_siniri="0").status_code == 400
+    assert gonder(istemci(), b"m", istek_siniri="5000").status_code == 400
+
+
+def test_sekme_kapaninca_is_durur():
+    """Gerçek sunucu + gerçek bağlantı kopması: kalan istekler gönderilmemeli."""
+    import socket
+    import threading
+    import time
+
+    import httpx
+    import uvicorn
+
+    istekler = []
+    ilk_parca = threading.Event()
+
+    class Yavas(SahteIstemci):
+        def tamamla(self, sistem, kullanici, uretim, parca_gelince=None, akis_sifirlandi=None):
+            if self.butce:
+                self.butce.harca()
+            istekler.append(1)
+            if parca_gelince:
+                parca_gelince("ilk ")
+            ilk_parca.set()
+            time.sleep(0.3)
+            return LLMCevabi("not", 1, 1, 1, model=self.model)
+
+    ayar = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="m", istek_siniri=100)
+    app = uygulama_olustur(lambda: ayar, Yavas, oturum_anahtari=OTURUM)
+    with socket.socket() as s_:
+        s_.bind(("127.0.0.1", 0)); port = s_.getsockname()[1]
+    sunucu = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    t = threading.Thread(target=sunucu.run, daemon=True); t.start()
+    while not sunucu.started:
+        time.sleep(0.05)
+    try:
+        with httpx.Client(timeout=10) as c:
+            with c.stream("POST", f"http://127.0.0.1:{port}/api/ozetle", params={"ad": "uzun.txt"}, content=UZUN,
+                          headers={"X-Oturum-Anahtari": OTURUM}) as cevap:
+                assert cevap.status_code == 200
+                assert ilk_parca.wait(5)
+            # bağlantı burada kapandı (sekme kapatıldı)
+            kapanista = len(istekler)
+        # İş, istek sayısı artmayı bırakana kadar beklenir. İşletim sistemi bağlantı kopmasını
+        # biraz geç fark edebilir (Windows'ta 1-3 istek); önemli olan işin sonunda durması.
+        son, sabit_basladi = len(istekler), time.monotonic()
+        bitis = time.monotonic() + 15
+        while time.monotonic() < bitis and time.monotonic() - sabit_basladi < 1.5:
+            time.sleep(0.1)
+            if len(istekler) != son:
+                son, sabit_basladi = len(istekler), time.monotonic()
+        assert time.monotonic() - sabit_basladi >= 1.5, "istekler durmadı"
+        assert son < 16, f"belgenin tamamı işlendi ({son} istek); iptal çalışmadı"
+        assert son - kapanista <= 6, f"kapanıştan sonra çok fazla istek gitti ({son - kapanista})"
+    finally:
+        sunucu.should_exit = True
+        t.join(5)
+
+
+# ------------------------------------------------------------------ ses ve video
+
+def test_video_yuklenir_yerel_yaziya_dokulur():
+    from tests.medya_uret import video_dosyasi
+    app = uygulama_olustur(lambda: AYAR, SahteIstemci, oturum_anahtari=OTURUM,
+                           transkriptor=lambda pcm, model: "[00:00] Proje teslim tarihi ertelendi.")
+    c = TestClient(app, base_url="http://127.0.0.1:8765")
+    o = olaylar(gonder(c, video_dosyasi("mp4", "mpeg4", "aac", saniye=2), ad="toplanti.mp4"))
+    assert o[-1]["tip"] == "bitti"
+    s = o[-1]["sonuc"]
+    assert s["belge_turu"] == "video" and s["ses_suresi_sn"] >= 1.8 and s["saglayiciya_gonderilen_ses_parcasi"] == 0
+    assert any("görüntüdeki yazı" in x["mesaj"] for x in o if x["tip"] == "not")
+
+
+def test_medya_icin_daha_buyuk_sinir_belge_icin_degil():
+    from ozetleyici.web.uygulama import EN_BUYUK_MEDYA
+    c = istemci()
+    orta = b"x" * (EN_BUYUK_YUKLEME + 10)
+    assert gonder(c, orta, ad="belge.txt").status_code == 413
+    assert gonder(c, orta, ad="kayit.mp3").status_code == 200  # boyut uygun; içerik sonra denetlenir
+    assert gonder(c, b"x" * (EN_BUYUK_MEDYA + 1), ad="kayit.mp3").status_code == 413
+
+
+def test_gecersiz_ses_secenegi():
+    assert gonder(istemci(), b"m", ses="bulut").status_code == 400
+
+
+def test_durum_medya_bilgisi():
+    d = istemci().get("/api/durum", headers={"X-Oturum-Anahtari": OTURUM}).json()
+    assert ".mp4" in d["medya"] and ".mp3" in d["desteklenen"]
+    assert d["whisper"]["model"] == "small" and d["istek_siniri"] == 20
+
+
+
+# ------------------------------------------------------------------ model seçimi
+
+def test_model_listesi_filtrelenmis_ve_varsayilan_basta():
+    d = istemci().get("/api/modeller", headers={"X-Oturum-Anahtari": OTURUM}).json()
+    assert d["modeller"] == ["sahte-model", "gemini-hizli-flash", "gemini-buyuk-pro"]
+    assert d["varsayilan"] == "sahte-model" and d["hata"] is None
+
+
+def test_model_listesi_oturum_anahtari_ister():
+    assert istemci().get("/api/modeller").status_code == 403
+
+
+def test_secilen_model_kullanilir():
+    kullanilan = []
+
+    class Kaydeden(SahteIstemci):
+        def tamamla(self, *a, **k):
+            kullanilan.append(self.model)
+            return super().tamamla(*a, **k)
+
+    o = olaylar(gonder(istemci(fabrika=Kaydeden), b"metin", model="gemini-buyuk-pro"))
+    assert o[-1]["tip"] == "bitti" and kullanilan == ["gemini-buyuk-pro"]
+    assert o[-1]["sonuc"]["model"] == "gemini-buyuk-pro"
+
+
+def test_listede_olmayan_model_reddedilir():
+    c = istemci()
+    assert gonder(c, b"metin", model="gemini-embedding-001").status_code == 400  # filtrelenmiş
+    assert gonder(c, b"metin", model="kotu/model").status_code == 400
+
+
+def test_baska_modelde_maliyet_gosterilmez():
+    ayar = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="sahte-model",
+                   girdi_fiyati=0.3, cikti_fiyati=2.5)
+    c = istemci(ayar_yukleyici=lambda: ayar)
+    varsayilan = olaylar(gonder(c, b"metin"))[-1]["sonuc"]
+    baska = olaylar(gonder(c, b"metin", model="gemini-hizli-flash"))
+    assert varsayilan["maliyet_usd"] is not None
+    assert baska[-1]["sonuc"]["maliyet_usd"] is None
+    assert any("maliyet hesaplanmadı" in x["mesaj"] for x in baska if x["tip"] == "not")
+
+
+def test_model_listesi_alinamazsa_yalnizca_varsayilan():
+    class Bozuk(SahteIstemci):
+        def modelleri_listele(self):
+            raise LLMHatasi("Model listesi alınamadı (APIConnectionError).")
+
+    d = istemci(fabrika=Bozuk).get("/api/modeller", headers={"X-Oturum-Anahtari": OTURUM}).json()
+    assert d["modeller"] == ["sahte-model"] and "alınamadı" in d["hata"]
+
+
+def test_model_listesi_onbellekte_tutulur():
+    sayac = []
+
+    class Sayan(SahteIstemci):
+        def modelleri_listele(self):
+            sayac.append(1)
+            return super().modelleri_listele()
+
+    c = istemci(fabrika=Sayan)
+    for _ in range(3):
+        c.get("/api/modeller", headers={"X-Oturum-Anahtari": OTURUM})
+    gonder(c, b"metin", model="gemini-buyuk-pro")
+    assert sayac == [1]  # sağlayıcıya bir kez soruldu
+
+
+# ------------------------------------------------------------------ arayüz olayları
+
+def test_asamalar_ve_kaynak_metin_gonderilir():
+    o = olaylar(gonder(istemci(), "Şirket bütçeyi onayladı.".encode()))
+    tipler = [x["tip"] for x in o]
+    assert tipler.index("asama") < tipler.index("kaynak") < tipler.index("parca")
+    assert [x["ad"] for x in o if x["tip"] == "asama"] == ["okuma", "ozet"]
+    kaynak = next(x for x in o if x["tip"] == "kaynak")
+    assert kaynak["metin"] == "Şirket bütçeyi onayladı." and kaynak["kesildi"] is False
+    assert o[-1]["sonuc"]["saglayiciya_giden_karakter"] == len("Şirket bütçeyi onayladı.")
+
+
+def test_kisisel_veride_kaynak_gosterilir_ama_disari_gitmez():
+    o = olaylar(gonder(istemci(), "Müşteri: ayse@example.com".encode()))
+    assert any(x["tip"] == "kaynak" for x in o) and o[-1]["tip"] == "kisisel_veri"
+
+
+def test_odak_modele_iletilir():
+    sistemler = []
+
+    class Kaydeden(SahteIstemci):
+        def tamamla(self, sistem, *a, **k):
+            sistemler.append(sistem)
+            return super().tamamla(sistem, *a, **k)
+
+    o = olaylar(gonder(istemci(fabrika=Kaydeden), b"metin", odak="teslim tarihleri"))
+    assert "<odak>teslim tarihleri</odak>" in sistemler[0] and o[-1]["sonuc"]["odak"] == "teslim tarihleri"
+
+
+def test_cok_uzun_odak_reddedilir():
+    assert gonder(istemci(), b"m", odak="x" * 301).status_code == 400

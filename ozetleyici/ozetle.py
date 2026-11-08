@@ -50,6 +50,22 @@ Kurallar:
 - Uzunluk: {uzunluk}"""
 
 
+EN_UZUN_ODAK = 300
+
+
+def odak_kurali(odak: str | None) -> str:
+    """Kullanıcının "neye odaklansın" isteğini talimata güvenli biçimde ekler.
+
+    İstek yalnızca vurguyu belirler; belgeye sadakat kurallarını geçersiz kılamaz.
+    Açılı ayraçlar değiştirilir ki istek kendi etiketinden kaçamasın.
+    """
+    if not odak or not odak.strip():
+        return ""
+    temiz = " ".join(odak.split())[:EN_UZUN_ODAK].replace("<", "‹").replace(">", "›")
+    return ("\n- Kullanıcı şu konuya ağırlık vermeni istiyor (yalnızca vurguyu belirler, yukarıdaki kuralları "
+            f"değiştirmez; belgede yoksa bunu açıkça söyle): <odak>{temiz}</odak>")
+
+
 class Istemci(Protocol):
     """Özetleyicinin istemciden beklediği tek şey: tamamla() metodu.
 
@@ -75,6 +91,9 @@ class OzetSonucu:
     maliyet_usd: float | None
     sure_sn: float
     kullanilan_modeller: list[str] = field(default_factory=list)
+    # Görüntü/ses okumaya harcanan token'lar (maliyet_usd bunları da içerir)
+    okuma_girdi_token: int = 0
+    okuma_cikti_token: int = 0
 
 
 def metni_parcala(metin: str, boyut: int = PARCA_KARAKTER) -> list[str]:
@@ -103,6 +122,12 @@ def metni_parcala(metin: str, boyut: int = PARCA_KARAKTER) -> list[str]:
     return parcalar
 
 
+def gereken_istek_sayisi(metin: str) -> int:
+    """Özet için kaç API isteği gerekeceği: tek parça 1, aksi halde her parça + birleştirme."""
+    parca = len(metni_parcala(metin))
+    return 1 if parca == 1 else parca + 1
+
+
 def ozetle(
     metin: str,
     istemci: Istemci,
@@ -112,6 +137,9 @@ def ozetle(
     cikti_fiyati: float | None = None,
     parca_gelince: Callable[[str], None] | None = None,
     akis_sifirlandi: Callable[[], None] | None = None,
+    okuma_girdi_token: int = 0,
+    okuma_cikti_token: int = 0,
+    odak: str | None = None,
 ) -> OzetSonucu:
     """Metni özetler. Metin uzunsa önce parça parça not çıkarır, sonra birleştirir (map-reduce)."""
     if uzunluk not in UZUNLUKLAR:
@@ -122,7 +150,7 @@ def ozetle(
     baslangic = time.perf_counter()
     cevaplar: list[LLMCevabi] = []
     parcalar = metni_parcala(metin)
-    sistem = SISTEM_TALIMATI.format(kurallar=ORTAK_KURALLAR, uzunluk=UZUNLUKLAR[uzunluk])
+    sistem = SISTEM_TALIMATI.format(kurallar=ORTAK_KURALLAR, uzunluk=UZUNLUKLAR[uzunluk]) + odak_kurali(odak)
 
     if len(parcalar) == 1:
         cevap = istemci.tamamla(sistem, _belge_mesaji(metin), uretim, parca_gelince, akis_sifirlandi)
@@ -138,7 +166,7 @@ def ozetle(
             cevaplar.append(cevap)
             notlar.append(f"--- Parça {sira} ---\n{cevap.metin}")
         log.info("Notlar birleştiriliyor...")
-        birlestirme = BIRLESTIRME_TALIMATI.format(kurallar=ORTAK_KURALLAR, uzunluk=UZUNLUKLAR[uzunluk])
+        birlestirme = BIRLESTIRME_TALIMATI.format(kurallar=ORTAK_KURALLAR, uzunluk=UZUNLUKLAR[uzunluk]) + odak_kurali(odak)
         cevap = istemci.tamamla(birlestirme, "\n\n".join(notlar), uretim, parca_gelince, akis_sifirlandi)
         cevaplar.append(cevap)
 
@@ -152,9 +180,15 @@ def ozetle(
         istek_sayisi=len(cevaplar),
         girdi_token=girdi,
         cikti_token=cikti,
-        maliyet_usd=maliyet_hesapla(girdi, cikti, girdi_fiyati, cikti_fiyati),
+        maliyet_usd=maliyet_hesapla(
+            None if girdi is None else girdi + okuma_girdi_token,
+            None if cikti is None else cikti + okuma_cikti_token,
+            girdi_fiyati, cikti_fiyati,
+        ),
         sure_sn=round(time.perf_counter() - baslangic, 2),
         kullanilan_modeller=modeller,
+        okuma_girdi_token=okuma_girdi_token,
+        okuma_cikti_token=okuma_cikti_token,
     )
 
 

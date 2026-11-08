@@ -25,6 +25,7 @@ class Ayarlar:
     zaman_asimi_sn: float = 60.0
     girdi_fiyati: float | None = None  # USD / 1 milyon token
     cikti_fiyati: float | None = None
+    istek_siniri: int = 20             # bir belge için en fazla API isteği
 
 
 def ayarlari_yukle() -> Ayarlar:
@@ -47,6 +48,10 @@ def ayarlari_yukle() -> Ayarlar:
     if zaman_asimi is not None and not 5 <= zaman_asimi <= 600:
         raise AyarHatasi("LLM_ZAMAN_ASIMI 5 ile 600 saniye arasında olmalı.")
 
+    istek_siniri = _sayi_oku("LLM_EN_FAZLA_ISTEK")
+    if istek_siniri is not None and not 1 <= istek_siniri <= 1000:
+        raise AyarHatasi("LLM_EN_FAZLA_ISTEK 1 ile 1000 arasında olmalı.")
+
     return Ayarlar(
         api_anahtari=anahtar,
         base_url=os.environ["LLM_BASE_URL"].strip(),
@@ -55,6 +60,7 @@ def ayarlari_yukle() -> Ayarlar:
         zaman_asimi_sn=zaman_asimi if zaman_asimi is not None else 60.0,
         girdi_fiyati=_sayi_oku("LLM_GIRDI_FIYATI"),
         cikti_fiyati=_sayi_oku("LLM_CIKTI_FIYATI"),
+        istek_siniri=int(istek_siniri) if istek_siniri is not None else 20,
     )
 
 
@@ -80,3 +86,15 @@ def _sayi_oku(ad: str) -> float | None:
     if sayi < 0:
         raise AyarHatasi(f"{ad} negatif olamaz.")
     return sayi
+
+
+# Yalnızca bilinen faster-whisper modelleri: .env'e yazılan rastgele bir ad,
+# Hugging Face'ten bilinmeyen bir depo indirtemesin.
+WHISPER_MODELLERI = ("tiny", "base", "small", "medium", "large-v3", "turbo")
+
+
+def whisper_modeli() -> str:
+    ad = os.getenv("WHISPER_MODELI", "small").strip() or "small"
+    if ad not in WHISPER_MODELLERI:
+        raise AyarHatasi(f"WHISPER_MODELI şunlardan biri olmalı: {', '.join(WHISPER_MODELLERI)} (gelen: {ad!r}).")
+    return ad

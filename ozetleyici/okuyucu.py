@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .okuyucular import DESTEKLENEN_UZANTILAR, OcrAyari, OkumaHatasi, OkumaSonucu, belgeyi_oku
+from .okuyucular import DESTEKLENEN_UZANTILAR, MEDYA_UZANTILARI, OcrAyari, OkumaHatasi, OkumaSonucu, belgeyi_oku
 
 __all__ = ["DESTEKLENEN_UZANTILAR", "OcrAyari", "OkumaHatasi", "OkumaSonucu", "belge_dosyasini_oku", "metni_oku"]
 
 # Çok büyük dosyalar hem belleği hem API bütçesini tüketir.
 EN_BUYUK_DOSYA_MB = 50
+EN_BUYUK_MEDYA_MB = 200
 
 
 def belge_dosyasini_oku(yol: Path, ocr: OcrAyari | None = None) -> OkumaSonucu:
@@ -21,8 +22,9 @@ def belge_dosyasini_oku(yol: Path, ocr: OcrAyari | None = None) -> OkumaSonucu:
     if not yol.is_file():
         raise OkumaHatasi(f"Bu bir dosya değil: {yol}")
     boyut_mb = yol.stat().st_size / 1_000_000
-    if boyut_mb > EN_BUYUK_DOSYA_MB:
-        raise OkumaHatasi(f"Dosya çok büyük: {boyut_mb:.0f} MB (sınır {EN_BUYUK_DOSYA_MB} MB).")
+    sinir = EN_BUYUK_MEDYA_MB if yol.suffix.lower() in MEDYA_UZANTILARI else EN_BUYUK_DOSYA_MB
+    if boyut_mb > sinir:
+        raise OkumaHatasi(f"Dosya çok büyük: {boyut_mb:.0f} MB (sınır {sinir} MB).")
     return belgeyi_oku(yol.read_bytes(), yol.name, ocr)
 
 

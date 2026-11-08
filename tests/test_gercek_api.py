@@ -26,3 +26,33 @@ def test_gercek_saglayici_kisa_ozet():
     )
     assert sonuc.ozet and "".join(gelen).strip() == sonuc.ozet
     assert "2027" in sonuc.ozet or "üç" in sonuc.ozet
+
+
+CUMLE = "Bugünkü toplantıda bütçe onaylandı ve proje teslim tarihi mart ayına ertelendi."
+ANAHTAR_KELIMELER = ("bütçe", "onaylandı", "proje", "teslim", "mart", "ertelendi")
+
+
+@pytest.mark.skipif(not os.getenv("OZETLEYICI_SES_DOSYASI"), reason="OZETLEYICI_SES_DOSYASI verilmedi")
+def test_gercek_whisper_turkce(capsys):
+    """Kendi sesinle şu cümleyi kaydet ve dosya yolunu ver:
+
+        "Bugünkü toplantıda bütçe onaylandı ve proje teslim tarihi mart ayına ertelendi."
+
+    PowerShell:
+        $env:OZETLEYICI_SES_DOSYASI="C:\\Users\\Emre\\Documents\\Ses Kayıtları\\kayit.m4a"
+        python -m pytest -m gercek_api -k whisper -s
+    İlk çalıştırmada model (~500 MB) indirilir. Ses bilgisayardan çıkmaz.
+    """
+    from pathlib import Path
+
+    from ozetleyici.ayarlar import whisper_modeli
+    from ozetleyici.okuyucular import OcrAyari, belgeyi_oku
+
+    yol = Path(os.environ["OZETLEYICI_SES_DOSYASI"])
+    sonuc = belgeyi_oku(yol.read_bytes(), yol.name, OcrAyari(ses_kipi="yerel", whisper_modeli=whisper_modeli()))
+    metin = sonuc.metin.casefold()
+    bulunan = [k for k in ANAHTAR_KELIMELER if k.casefold() in metin]
+    with capsys.disabled():
+        print(f"\n--- Whisper çıktısı ({sonuc.ses_suresi_sn} sn) ---\n{sonuc.metin}\n"
+              f"--- Bulunan anahtar kelimeler: {len(bulunan)}/{len(ANAHTAR_KELIMELER)}: {', '.join(bulunan)}")
+    assert len(bulunan) >= 4, "Kayıt net değil ya da model Türkçeyi yeterince iyi tanımadı"

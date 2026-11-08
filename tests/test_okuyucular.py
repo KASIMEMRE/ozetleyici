@@ -214,3 +214,32 @@ def test_metinli_pdf_ocrsiz_okunur(monkeypatch):
     monkeypatch.setattr(gorsel_modulu, "_tesseract", olmamali)
     sonuc = belgeyi_oku((Path(__file__).parent / "veri" / "ornek.pdf").read_bytes(), "a.pdf")
     assert sonuc.ocr_sayfa_sayisi == 0 and "Kişisel Verilerin Korunması" in sonuc.metin
+
+
+# ------------------------------------------------------------------ inceleme bulguları (önce başarısız oldular)
+
+def test_word_kopru_metni_kaybolmaz():
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    d = Document()
+    p = d.add_paragraph("Başvuru için ")
+    rid = d.part.relate_to("https://ornek.com",
+                           "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                           is_external=True)
+    kopru = OxmlElement("w:hyperlink"); kopru.set(qn("r:id"), rid)
+    r = OxmlElement("w:r"); t = OxmlElement("w:t"); t.text = "başvuru formunu"; r.append(t); kopru.append(r)
+    p._p.append(kopru)
+    p.add_run(" doldurun.")
+    assert "Başvuru için başvuru formunu doldurun." in belgeyi_oku(kaydet(d), "a.docx").metin
+
+
+def test_powerpoint_grup_icindeki_metin_okunur():
+    from pptx import Presentation
+    from pptx.util import Inches
+    s = Presentation()
+    slayt = s.slides.add_slide(s.slide_layouts[6])
+    grup = slayt.shapes.add_group_shape()
+    ic_grup = grup.shapes.add_group_shape()
+    ic_grup.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text_frame.text = "Pazar payı %40"
+    assert "Pazar payı %40" in belgeyi_oku(kaydet(s), "a.pptx").metin

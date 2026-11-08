@@ -7,6 +7,7 @@ uygulamasında yüklenen dosya hiçbir zaman diske yazılmaz.
 from __future__ import annotations
 
 from .gorsel import resmi_ac, resmi_oku, tesseract_yolu
+from .medya import SES_UZANTILARI, VIDEO_UZANTILARI, medya_oku
 from .ofis import powerpoint_oku, word_oku
 from .pdf import pdf_oku
 from .tablo import csv_oku, excel_oku
@@ -17,11 +18,15 @@ TURLER = {
     ".pdf": "pdf",
     ".docx": "word", ".pptx": "powerpoint", ".xlsx": "excel", ".xlsm": "excel",
     ".png": "gorsel", ".jpg": "gorsel", ".jpeg": "gorsel",
+    **{u: "ses" for u in SES_UZANTILARI},
+    **{u: "video" for u in VIDEO_UZANTILARI},
 }
+MEDYA_UZANTILARI = SES_UZANTILARI | VIDEO_UZANTILARI
 ESKI_BICIMLER = {".doc": ".docx", ".xls": ".xlsx", ".ppt": ".pptx"}
 DESTEKLENEN_UZANTILAR = set(TURLER)
 
-__all__ = ["OcrAyari", "OkumaHatasi", "OkumaSonucu", "belgeyi_oku", "tesseract_yolu", "DESTEKLENEN_UZANTILAR"]
+__all__ = ["OcrAyari", "OkumaHatasi", "OkumaSonucu", "belgeyi_oku", "tesseract_yolu", "DESTEKLENEN_UZANTILAR",
+           "MEDYA_UZANTILARI"]
 
 
 def uzantiyi_al(ad: str) -> str:
@@ -58,9 +63,13 @@ def belgeyi_oku(veri: bytes, ad: str, ocr: OcrAyari | None = None) -> OkumaSonuc
         sonuc = powerpoint_oku(veri, ad)
     elif tur == "excel":
         sonuc = excel_oku(veri, ad)
+    elif tur in ("ses", "video"):
+        sonuc = medya_oku(veri, ad, uzanti, ocr)
     else:  # gorsel
         imzayi_dogrula(veri, "png" if uzanti == ".png" else "jpg", ad)
         resim = resmi_ac(veri, ad)
+        if ocr.kip == "gemini" and ocr.on_kontrol:
+            ocr.on_kontrol(1)
         notlar = []
         metin = metni_temizle(resmi_oku(resim, ocr, ad), notlar)
         yontem = "Gemini (görüntü sağlayıcıya gönderildi)" if ocr.kip == "gemini" else "yerel Tesseract"

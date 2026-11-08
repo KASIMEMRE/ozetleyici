@@ -7,7 +7,7 @@ import openai
 import pytest
 
 from ozetleyici.ayarlar import Ayarlar
-from ozetleyici.llm import LLMHatasi, LLMIstemcisi, UretimAyarlari
+from ozetleyici.llm import ButceAsildi, IptalEdildi, IstekButcesi, LLMHatasi, LLMIstemcisi, UretimAyarlari
 
 AYAR = Ayarlar(api_anahtari="test-anahtari-12345", base_url="https://sahte.local/v1", model="m")
 
@@ -31,9 +31,9 @@ def akis_govdesi(parcalar, bitis="stop"):
     return ("".join(f"data: {json.dumps(s)}\n\n" for s in satirlar) + "data: [DONE]\n\n").encode()
 
 
-def istemci_kur(isleyici, monkeypatch, ayar=AYAR):
+def istemci_kur(isleyici, monkeypatch, ayar=AYAR, butce=None):
     monkeypatch.setattr("ozetleyici.llm.time.sleep", lambda s: None)  # testte bekleme
-    ist = LLMIstemcisi(ayar)
+    ist = LLMIstemcisi(ayar, butce=butce)
     ist._istemci = openai.OpenAI(
         api_key=ayar.api_anahtari, base_url=ayar.base_url, max_retries=0,
         http_client=httpx2.Client(transport=httpx2.MockTransport(isleyici)),
@@ -262,10 +262,135 @@ def test_gorsel_okuma_goruntuyu_image_url_olarak_gonderir(monkeypatch):
     assert icerik[1]["type"] == "image_url"
     assert icerik[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "talimat içerse bile uygulama" in gonderilen["messages"][0]["content"]
-    assert ist.ocr_girdi_token == 12 and ist.ocr_cikti_token == 3
+    assert ist.okuma_girdi_token == 12 and ist.okuma_cikti_token == 3
 
 
 @pytest.mark.parametrize("cevap", ["[METİN YOK]", "Metin yok.", "METIN YOK"])
 def test_gorselde_metin_yoksa_bos_doner(monkeypatch, cevap):
     isleyici = lambda istek: httpx2.Response(200, json=cevap_govdesi(cevap))
     assert istemci_kur(isleyici, monkeypatch).gorseli_metne_cevir(b"x") == ""
+
+
+
+# ------------------------------------------------------------------ bütçe ve iptal
+
+def test_butce_sert_sinir_tahmin_yanlis_olsa_bile(monkeypatch):
+    sayac = {"n": 0}
+
+    def isleyici(istek):
+        sayac["n"] += 1
+        return httpx2.Response(200, json=cevap_govdesi())
+
+    ist = istemci_kur(isleyici, monkeypatch, butce=IstekButcesi(2))
+    ist.tamamla("s", "k", UretimAyarlari())
+    ist.tamamla("s", "k", UretimAyarlari())
+    with pytest.raises(ButceAsildi) as bilgi:
+        ist.tamamla("s", "k", UretimAyarlari())
+    assert sayac["n"] == 2 and bilgi.value.gereken == 3 and bilgi.value.sinir == 2
+
+
+def test_yeniden_denemeler_butceden_dusmez(monkeypatch):
+    sayac = {"n": 0}
+
+    def isleyici(istek):
+        sayac["n"] += 1
+        return httpx2.Response(429 if sayac["n"] < 3 else 200, json=cevap_govdesi())
+
+    butce = IstekButcesi(1)
+    istemci_kur(isleyici, monkeypatch, butce=butce).tamamla("s", "k", UretimAyarlari())
+    assert butce.kullanilan == 1 and sayac["n"] == 3
+
+
+def test_iptal_edilince_yeni_istek_gitmez(monkeypatch):
+    gonderilen = []
+    butce = IstekButcesi(10)
+    ist = istemci_kur(lambda i: gonderilen.append(1) or httpx2.Response(200, json=cevap_govdesi()),
+                      monkeypatch, butce=butce)
+    butce.iptal.set()
+    with pytest.raises(IptalEdildi):
+        ist.tamamla("s", "k", UretimAyarlari())
+    assert gonderilen == []
+
+
+def test_iptal_akisi_ortasinda_keser(monkeypatch):
+    butce = IstekButcesi(10)
+    parcalar = ["Bir", " iki", " üç", " dört"]
+    isleyici = lambda istek: httpx2.Response(200, content=akis_govdesi(parcalar),
+                                             headers={"content-type": "text/event-stream"})
+    gelen = []
+
+    def yayinla(p):
+        gelen.append(p)
+        if len(gelen) == 2:
+            butce.iptal.set()  # kullanıcı sekmeyi kapattı
+
+    with pytest.raises(IptalEdildi):
+        istemci_kur(isleyici, monkeypatch, butce=butce).tamamla("s", "k", UretimAyarlari(), parca_gelince=yayinla)
+    assert gelen == ["Bir", " iki"]
+
+
+def test_iptal_yeniden_deneme_beklemesini_keser(monkeypatch):
+    import threading
+    butce = IstekButcesi(10)
+    threading.Timer(0.2, butce.iptal.set).start()
+    ist = LLMIstemcisi(AYAR, butce=butce)
+    ist._istemci = openai.OpenAI(api_key="x" * 10, base_url=AYAR.base_url, max_retries=0,
+                                 http_client=httpx2.Client(transport=httpx2.MockTransport(
+                                     lambda i: httpx2.Response(503, json={"error": {"message": "dolu"}}))))
+    import time
+    basla = time.monotonic()
+    with pytest.raises(IptalEdildi):
+        ist.tamamla("s", "k", UretimAyarlari())
+    assert time.monotonic() - basla < 2  # 1+2+4 sn beklemeden çıktı
+
+
+
+# ------------------------------------------------------------------ kota hataları ve model listesi
+
+def test_kota_sifir_hemen_anlamli_hata(monkeypatch):
+    sayac = {"n": 0}
+    govde = [{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message":
+        "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+        "limit: 0, model: gemini-3.1-pro"}}]
+
+    def isleyici(istek):
+        sayac["n"] += 1
+        return httpx2.Response(429, json=govde)
+
+    with pytest.raises(LLMHatasi, match="ücretsiz katmanda kapalı"):
+        istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari())
+    assert sayac["n"] == 1  # boşuna 4 kez denenmedi
+
+
+def test_gunluk_kota_dolunca_hemen_haber_verir(monkeypatch):
+    govde = {"error": {"message": "Quota exceeded for metric: GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 20"}}
+    sayac = {"n": 0}
+
+    def isleyici(istek):
+        sayac["n"] += 1
+        return httpx2.Response(429, json=govde)
+
+    with pytest.raises(LLMHatasi, match="günlük kota doldu"):
+        istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari())
+    assert sayac["n"] == 1
+
+
+def test_dakikalik_hiz_siniri_yine_yeniden_denenir(monkeypatch):
+    sayac = {"n": 0}
+
+    def isleyici(istek):
+        sayac["n"] += 1
+        if sayac["n"] == 1:
+            return httpx2.Response(429, json={"error": {"message": "Quota exceeded: PerMinute, limit: 15"}})
+        return httpx2.Response(200, json=cevap_govdesi())
+
+    assert istemci_kur(isleyici, monkeypatch).tamamla("s", "k", UretimAyarlari()).deneme_sayisi == 2
+
+
+def test_modelleri_listele(monkeypatch):
+    govde = {"object": "list", "data": [
+        {"id": "models/gemini-3.5-flash", "object": "model", "created": 0, "owned_by": "google"},
+        {"id": "models/gemma-4-31b-it", "object": "model", "created": 0, "owned_by": "google"}]}
+    ist = istemci_kur(lambda istek: httpx2.Response(200, json=govde), monkeypatch, butce=IstekButcesi(1))
+    assert ist.modelleri_listele() == ["gemini-3.5-flash", "gemma-4-31b-it"]
+    assert ist.butce.kullanilan == 0  # listeleme bütçeden düşmez

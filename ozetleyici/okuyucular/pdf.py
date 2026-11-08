@@ -34,6 +34,8 @@ def pdf_oku(veri: bytes, ad: str, ocr: OcrAyari) -> OkumaSonucu:
         hedef = taranmis[: ocr.en_fazla_sayfa]
         if len(taranmis) > len(hedef):
             notlar.append(f"{len(taranmis)} taranmış sayfanın yalnızca ilk {len(hedef)} tanesi OCR ile okundu.")
+        if ocr.kip == "gemini" and ocr.on_kontrol:
+            ocr.on_kontrol(len(hedef))  # her sayfa bir API isteği
         import pypdfium2 as pdfium
 
         belge = pdfium.PdfDocument(veri)

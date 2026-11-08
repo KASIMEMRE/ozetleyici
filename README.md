@@ -18,8 +18,11 @@ python -m ozetleyici ornekler/ornek_belge.txt -u kisa      # komut satırı
 | Excel | `.xlsx` `.xlsm` | Her sayfadan 100 satır önizleme + **istatistikler Python'da, tüm satırlardan**; gizli sayfalar ve makrolar okunmaz |
 | CSV | `.csv` | `;` `,` sekme ayırıcısı otomatik; Türkçe ondalık (1.234,56) anlaşılır |
 | Görsel | `.png` `.jpg` | OCR ile |
+| Ses | `.mp3` `.wav` `.m4a` `.ogg` `.opus` `.flac` | Konuşma yazıya dökülür (yerel Whisper veya model ile), sonra özetlenir |
+| Video | `.mp4` `.mov` `.mkv` `.webm` `.avi` | Yalnızca ses kanalı; görüntüdeki yazı ve slaytlar okunmaz |
 
 Eski `.doc` `.xls` `.ppt` biçimleri desteklenmez; Office'te "Farklı Kaydet" ile yeni biçime çevir.
+Boyut sınırı belgeler için 25 MB (komut satırında 50 MB), ses ve video için 200 MB ve en fazla 60 dakika.
 
 ## Kurulum (Windows, PowerShell)
 
@@ -46,6 +49,12 @@ git config core.hooksPath .githooks   # commit'lere anahtar girmesini engelleyen
 3. Varsayılan yere (`C:\Program Files\Tesseract-OCR`) kurduysan başka ayar gerekmez; farklı bir yere kurduysan
    `.env` dosyasına `TESSERACT_YOLU=` ile `tesseract.exe`'nin tam yolunu yaz.
 
+### Konuşma tanıma modeli (ses ve video için)
+
+`pip install -r requirements.txt` ile faster-whisper kurulur. Model ilk ses dosyasında bir kez internetten indirilir
+(`small` ≈ 500 MB) ve sonra internetsiz çalışır. İşlemcide çalıştığı için yavaştır: 10 dakikalık bir kayıt birkaç
+dakika sürebilir. Modeli `.env`'de `WHISPER_MODELI` ile değiştirebilirsin (`medium` Türkçede daha doğru, ~2-3 kat yavaş).
+
 Tesseract kurulu değilse taranmış sayfalar için "Model ile okuma" seçeneğini veya `--ocr gemini`'yi kullanabilirsin.
 
 `Activate.ps1` "running scripts is disabled" hatası verirse bir kez şunu çalıştır:
@@ -59,7 +68,20 @@ macOS/Linux'ta etkinleştirme: `source .venv/bin/activate`, kopyalama: `cp .env.
 python -m ozetleyici.web
 ```
 
-Tarayıcı kendiliğinden `http://127.0.0.1:8765` adresini açar. Dosyayı sürükle-bırak, uzunluğu ve taranmış
+Tarayıcı kendiliğinden `http://127.0.0.1:8765` adresini açar. Arayüzde:
+
+- Dosyayı sayfanın herhangi bir yerine bırakabilir, **Ctrl + Enter** ile özetleyebilirsin.
+- Yalnızca o dosya türünde anlamı olan ayarlar görünür (OCR yalnızca PDF ve görselde, yazıya dökme yalnızca ses ve videoda).
+- **Neye odaklansın?** alanına "yaptırımlar ve süreler" gibi bir istek yazabilirsin; bu yalnızca vurguyu değiştirir,
+  modelin belgeye sadık kalma kurallarını geçersiz kılamaz.
+- **Kaynak metin** sekmesi modelin gördüğü metni gösterir; ses ve videoda bu, yazıya dökülmüş konuşmadır.
+- **Veri izi**, neyin bu bilgisayarda kaldığını ve neyin modele gittiğini (kaç karakter, kaç görüntü veya ses parçası) gösterir.
+- Uzun işlerde aşama, geçen süre ve **Durdur** düğmesi görünür; durdurunca sıradaki istek gönderilmez.
+- Özeti Markdown, düz metin veya JSON olarak indirebilirsin. **Bu oturumda** listesi önceki özetlere döner;
+  yalnızca bellekte tutulur, sayfayı kapatınca silinir.
+ Sağ üstten modeli seçebilirsin: liste,
+anahtarının erişebildiği ve metin üreten modellerden oluşur (ses/görsel üretme ve embedding modelleri elenir).
+Seçimin tarayıcıda hatırlanır. Dosyayı sürükle-bırak, uzunluğu ve taranmış
 sayfaların nasıl okunacağını seç, **Özetle**'ye bas. Özet yazıldıkça görünür; bitince kopyalayabilir veya
 JSON olarak indirebilirsin. Durdurmak için terminalde Ctrl+C.
 
@@ -78,14 +100,42 @@ python -m ozetleyici --help                          # tüm seçenekler
 | `-u, --uzunluk` | `kisa`, `orta` (varsayılan), `uzun` |
 | `-o, --cikti` | JSON dosyasının yolu |
 | `--model` | `.env`'deki modeli bu çalıştırma için değiştirir |
+| `--odak` | Özet neye ağırlık versin (ör. `--odak "teslim tarihleri"`) |
+| `--modelleri-listele` | Anahtarının erişebildiği özet modellerini listeler |
 | `--temperature` (0-2), `--top-p` (0.01-1) | Örnekleme ayarları; verilmezse API'ye gönderilmez |
 | `--max-token` | Cevaptaki en fazla token (varsayılan 1024). Düşünen modellerde (ör. Claude) 4096 önerilir |
 | `--akissiz` | Akış (streaming) yerine tek seferde cevap |
+| `--ses` | `yerel` (Whisper, varsayılan, ses bilgisayardan çıkmaz), `gemini` (ses sağlayıcıya gider) |
+| `--whisper-modeli` | `tiny` `base` `small` `medium` `large-v3` `turbo` |
+| `--istek-siniri` | Bu belge için en fazla API isteği (varsayılan 20) |
 | `--ocr` | `yerel` (Tesseract, varsayılan), `gemini` (görüntü sağlayıcıya gider), `kapali` |
 | `--yine-de-gonder` | Belgede kişisel veri ipucu olsa bile gönder (aşağıya bak) |
 | `-s, --sessiz` | Bilgi mesajlarını gizle |
 
-Çıkış kodları: `0` başarılı, `1` hata, `2` geçersiz argüman, `3` kişisel veri nedeniyle durduruldu, `130` Ctrl+C.
+Çıkış kodları: `0` başarılı, `1` hata, `2` geçersiz argüman, `3` kişisel veri nedeniyle durduruldu,
+`4` istek sınırı nedeniyle durduruldu, `130` Ctrl+C.
+
+## Maliyet kontrolü
+
+Uygulama yalnızca **Özetle**'ye basınca LLM sağlayıcısına istek atar; arka planda hiçbir şey çalışmaz.
+Kısa bir belge 1 istek, uzun bir belge "parça sayısı + 1" istek, model ile OCR her taranmış sayfa için 1,
+model ile ses her 5 dakika için 1 istek harcar. Korumalar:
+
+- **Belge başına istek sınırı** (varsayılan 20, `LLM_EN_FAZLA_ISTEK`): iş başlamadan önce gereken istek sayısı
+  hesaplanır; sınırı aşıyorsa hiçbir istek gönderilmeden onay istenir. Tahmin yanlış çıksa bile sınır aşılamaz,
+  çünkü her istekten önce ayrıca sayılır. Hata sonrası yeniden denemeler sayılmaz (sağlayıcı başarısız isteği
+  ücretlendirmez).
+- **Sekmeyi kapatınca iş durur**: bir sonraki istek gönderilmez, süren akış kesilir.
+- **Gerçek maliyet**: `maliyet_usd`, OCR ve ses okumaya harcanan token'ları da içerir.
+
+**Model seçimi.** Google, hangi modelin ücretsiz katmanda açık olduğunu bir API ile bildirmiyor; kendi
+hesabının limitlerini [AI Studio'daki limitler sayfasında](https://aistudio.google.com/rate-limit) görebilirsin.
+Faturalandırma bağlı değilse kapalı bir model seçmek para harcatmaz: istek reddedilir ve uygulama
+"kota 0 / ücretsiz katmanda kapalı olabilir" der (boşuna yeniden denemez; günlük kota dolduğunda da hemen söyler).
+`.env`'deki fiyatlar yalnızca varsayılan model içindir; başka model seçilince maliyet "hesaplanmadı" görünür.
+
+Gemini'nin ücretsiz katmanında ücret alınmaz; sınıra gelince istekler reddedilir. Ücretli katmana geçersen
+Google AI Studio'da **Spend** sayfasından harcama tavanı koy.
 
 ## Gizlilik ve güvenlik
 
@@ -130,7 +180,13 @@ IBAN, e-posta ve cep telefonu arar; bulursa **göndermeden durur** (çıkış ko
   Excel'deki gizli sayfalar modele gönderilmez: bunlar belgeye okurun göremeyeceği talimat saklamanın yollarıdır.
 - Excel makroları hiçbir zaman yüklenmez veya çalıştırılmaz.
 
-**Model ile OCR'ın bir bedeli var.** `gemini` kipinde taranmış sayfanın görüntüsü, kişisel veri kontrolünden
+**Ses de kişisel veridir.** Bir ses kaydı konuşanı tanımlar ve konuşmalar genelde isim ve başka kişisel bilgi
+içerir. Bu yüzden varsayılan yerel Whisper'dır: ses bilgisayardan çıkmaz. Ses/video çözümleme (ffmpeg) güvenilmeyen
+dosyaları ayrıştırdığı için **ayrı bir süreçte** çalışır: süre sınırı (5 dakika), Linux/macOS'ta bellek sınırı, en fazla
+60 dakikalık ses (dosya süresini gizlese bile çözülen miktara göre kesilir) ve bu süreç **API anahtarlarını görmez**.
+Whisper'ın sessiz bölümlerde uydurduğu bilinen satırlar (ör. "Altyazı M.K.") atılır.
+
+**Model ile OCR'ın bir bedeli var.** Model ile OCR'da ve model ile seste görüntü/ses, kişisel veri kontrolünden
 **önce** sağlayıcıya gider (metni ancak okuduktan sonra kontrol edebiliriz). Kişisel veri içerebilecek taramalar
 için yerel Tesseract'ı kullan.
 
@@ -185,8 +241,18 @@ Testler internet ve API anahtarı gerektirmez; LLM çağrıları sahte bir HTTP 
 Gerçek sağlayıcıyla tek bir deneme (küçük bir maliyeti olabilir):
 
 ```powershell
-$env:OZETLEYICI_GERCEK_TEST=1; python -m pytest -m gercek_api
+$env:OZETLEYICI_GERCEK_TEST=1; python -m pytest -m gercek_api -k saglayici
 ```
+
+Gerçek Whisper modeliyle Türkçe deneme: Ses Kaydedicisi ile şu cümleyi kaydet:
+"Bugünkü toplantıda bütçe onaylandı ve proje teslim tarihi mart ayına ertelendi." Sonra:
+
+```powershell
+$env:OZETLEYICI_SES_DOSYASI="C:\Users\Emre\Documents\Ses Kayıtları\kayit.m4a"
+python -m pytest -m gercek_api -k whisper -s
+```
+
+Test, modelin çıktısını ve cümledeki 6 anahtar kelimeden kaçını doğru yazdığını gösterir.
 
 ## Ölçümler
 
@@ -197,6 +263,8 @@ pahalı; Türkçe eklerin etkisi.
 ## Bilinen sınırlar
 
 - OCR kalitesi taramanın kalitesine bağlıdır; model ile OCR'da model okuyamadığı yeri tahmin edebilir.
+- Videoda yalnızca konuşma okunur; ekrandaki slayt ve yazılar özetlenmez.
+- Konuşmacılar yerel Whisper'da ayrılmaz (kimin konuştuğu belirtilmez); model ile yazıya dökmede denenir.
 - Excel'de formül sonuçları dosyada kayıtlı değilse (dosya Excel'de hiç açılıp kaydedilmediyse) hücreler boş görünür.
 - Kişisel veri kontrolü isim, adres ve plaka gibi verileri yakalamaz.
 - Gemini dışındaki sağlayıcılar yalnızca sahte sunucuyla test edildi.

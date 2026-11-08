@@ -10,6 +10,10 @@ defusedxml>=0.7      # openpyxl XML'i güvenli ayrıştırsın (XXE / "billion l
 Pillow>=11
 pypdfium2>=4.30      # taranmış PDF sayfalarını görüntüye çevirmek için (ek program gerektirmez)
 pytesseract>=0.3.13  # yerel OCR; Tesseract programının ayrıca kurulması gerekir
+# Ses ve video (PyAV, ffmpeg'i kendi içinde getirir; ayrıca program kurmak gerekmez)
+faster-whisper>=1.1,<2   # yerel konuşma tanıma; model ilk kullanımda indirilir
+av>=14,<20             # 17 ve 19 ile test edildi
+
 # Web arayüzü
 fastapi>=0.115
 uvicorn>=0.30
