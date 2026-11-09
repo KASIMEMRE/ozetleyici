@@ -8,7 +8,8 @@ const $ = (id) => document.getElementById(id);
 const el = Object.fromEntries([
   "durum", "model", "dosya", "birak", "birak-bos", "birak-dolu", "birak-alt", "dosya-tur", "dosya-ad", "dosya-boyut",
   "odak", "ocr-ayar", "ses-ayar", "tesseract-uyari", "whisper-uyari", "ozetle", "gecmis", "gecmis-liste",
-  "sekme-ozet", "sekme-kaynak", "panel-ozet", "panel-kaynak", "kopyala", "indir", "indir-menu",
+  "sekme-ozet", "sekme-soru", "sekme-kaynak", "panel-ozet", "panel-soru", "panel-kaynak", "kopyala", "indir", "indir-menu",
+  "soru-liste", "soru-form", "soru", "sor",
   "ilerleme", "sure", "durdur", "son-bilgi", "uyari-kisisel", "kisisel-liste", "kisisel-gonder", "kisisel-vazgec",
   "uyari-butce", "butce-gereken", "butce-sinir", "butce-devam", "butce-vazgec", "hata", "ozet", "kaynak",
   "kaynak-bilgi", "notlar-kutu", "notlar", "not-sayisi", "iz", "iz-yerel", "iz-disari", "olcum", "birakma-katmani",
@@ -183,6 +184,9 @@ function dugmeleriGuncelle() {
   el.kopyala.disabled = !sonucVar;
   el.indir.disabled = !sonucVar;
   el.sekmeKaynak.disabled = !(durum.gorunen && durum.gorunen.kaynak);
+  el.sekmeSoru.disabled = !(durum.gorunen && durum.gorunen.belgeId);
+  el.soru.disabled = !(durum.gorunen && durum.gorunen.belgeId) || (durum.calisiyor && !durum.soruSuruyor);
+  el.sor.disabled = el.soru.disabled;
 }
 
 function hataGoster(mesaj) {
@@ -190,14 +194,16 @@ function hataGoster(mesaj) {
   el.hata.textContent = mesaj || "";
 }
 
+const SEKMELER = () => ({ ozet: [el.sekmeOzet, el.panelOzet], soru: [el.sekmeSoru, el.panelSoru], kaynak: [el.sekmeKaynak, el.panelKaynak] });
+let aktifSekme = "ozet";
 function sekmeSec(hangisi) {
-  const ozet = hangisi === "ozet";
-  el.sekmeOzet.setAttribute("aria-selected", String(ozet));
-  el.sekmeKaynak.setAttribute("aria-selected", String(!ozet));
-  el.sekmeOzet.tabIndex = ozet ? 0 : -1;
-  el.sekmeKaynak.tabIndex = ozet ? -1 : 0;
-  el.panelOzet.hidden = !ozet;
-  el.panelKaynak.hidden = ozet;
+  aktifSekme = hangisi;
+  for (const [ad, [sekme, panel]] of Object.entries(SEKMELER())) {
+    const secili = ad === hangisi;
+    sekme.setAttribute("aria-selected", String(secili));
+    sekme.tabIndex = secili ? 0 : -1;
+    panel.hidden = !secili;
+  }
 }
 
 function notEkle(mesaj, uyari = false) {
@@ -220,6 +226,7 @@ function ekraniTemizle() {
   el.notlar.replaceChildren(); el.notSayisi.textContent = "0"; el.notlarKutu.hidden = true;
   el.uyariKisisel.hidden = true; el.uyariButce.hidden = true; el.iz.hidden = true;
   el.kaynak.textContent = ""; el.kaynakBilgi.textContent = "";
+  el.soruListe.replaceChildren(); el.soru.value = "";
   el.ozet.replaceChildren(); el.ozet.classList.remove("yaziyor");
   hataGoster(null);
   sekmeSec("ozet");
@@ -250,6 +257,13 @@ function izGoster(s, durdu = null) {
     kalem(disari, `${sayiYaz(s.saglayiciya_giden_karakter)} karakter metin`, s.kullanilan_modeller.join(", "));
     if (s.saglayiciya_gonderilen_gorsel) kalem(disari, `${s.saglayiciya_gonderilen_gorsel} sayfa görüntüsü`, "");
     if (s.saglayiciya_gonderilen_ses_parcasi) kalem(disari, `${s.saglayiciya_gonderilen_ses_parcasi} ses parçası (5 dk)`, "");
+    const sorular = (durum.gorunen && durum.gorunen.sorular) || [];
+    if (sorular.length) {
+      const anlamsal = sorular.some((q) => q.sonuc.anlamsal);
+      kalem(disari, `${sorular.length} soru`, anlamsal
+        ? "Soru metni ve ilgili parçalar; ilk soruda belge parçaları da embedding için"
+        : "Soru metni ve ilgili parçalar");
+    }
   }
   const ciz = (ul, liste, bos) => {
     ul.replaceChildren(...liste.map(([b, a]) => {
@@ -270,6 +284,10 @@ function izGoster(s, durdu = null) {
       ["Token", s.girdi_token != null ? `${sayiYaz(s.girdi_token + (s.okuma_girdi_token || 0))} girdi, ${sayiYaz(s.cikti_token + (s.okuma_cikti_token || 0))} çıktı` : "bildirilmedi"],
       ["Maliyet", s.maliyet_usd != null ? `${s.maliyet_usd.toFixed(6)} USD` : "hesaplanmadı"],
     ];
+    const sorular = (durum.gorunen && durum.gorunen.sorular) || [];
+    if (sorular.length) {
+      olcumler.splice(2, 0, ["Soru istekleri", String(sorular.reduce((t, q) => t + q.sonuc.kullanilan_istek, 0))]);
+    }
     for (const [ad, deger] of olcumler) {
       const kutu = yeni("div");
       kutu.append(yeni("dt", ad), yeni("dd", deger));
@@ -279,12 +297,38 @@ function izGoster(s, durdu = null) {
   el.iz.hidden = false;
 }
 
+// ---------------------------------------------------------------- akış okuma
+
+// Sunucu her satırda bir JSON olay gönderir (NDJSON); her olay için isleyici çağrılır.
+async function akisiOku(cevap, isleyici) {
+  if (!cevap.ok) {
+    let mesaj = cevap.statusText;
+    try { mesaj = (await cevap.json()).hata || mesaj; } catch (_) { /* gövde JSON değil */ }
+    throw new Error(mesaj);
+  }
+  const okuyucu = cevap.body.getReader();
+  const cozucu = new TextDecoder();
+  let tampon = "";
+  for (;;) {
+    const { value, done } = await okuyucu.read();
+    if (done) break;
+    tampon += cozucu.decode(value, { stream: true });
+    let n;
+    while ((n = tampon.indexOf("\n")) >= 0) {
+      const satir = tampon.slice(0, n).trim();
+      tampon = tampon.slice(n + 1);
+      if (satir) isleyici(JSON.parse(satir));
+    }
+  }
+}
+
 // ---------------------------------------------------------------- özetleme
 
 async function ozetle() {
   if (!durum.dosya || durum.calisiyor || durum.ayarHatasi) return;
   durum.calisiyor = true;
-  durum.gorunen = { ad: durum.dosya.name, tur: el.dosyaTur.textContent, sonuc: null, kaynak: "", notlar: [], zaman: new Date() };
+  durum.gorunen = { ad: durum.dosya.name, tur: el.dosyaTur.textContent, sonuc: null, kaynak: "", notlar: [],
+                    zaman: new Date(), belgeId: null, sorular: [] };
   ekraniTemizle();
   el.ozet.classList.add("yaziyor");
   el.ilerleme.hidden = false;
@@ -313,24 +357,7 @@ async function ozetle() {
       method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: durum.dosya,
       signal: durum.iptal.signal,
     });
-    if (!cevap.ok) {
-      let mesaj = cevap.statusText;
-      try { mesaj = (await cevap.json()).hata || mesaj; } catch (_) { /* gövde JSON değil */ }
-      throw new Error(mesaj);
-    }
-    const okuyucu = cevap.body.getReader();
-    const cozucu = new TextDecoder();
-    let tampon = "";
-    for (;;) {
-      const { value, done } = await okuyucu.read();
-      if (done) break;
-      tampon += cozucu.decode(value, { stream: true });
-      let n;
-      while ((n = tampon.indexOf("\n")) >= 0) {
-        const satir = tampon.slice(0, n).trim();
-        tampon = tampon.slice(n + 1);
-        if (!satir) continue;
-        const o = JSON.parse(satir);
+    await akisiOku(cevap, (o) => {
         switch (o.tip) {
           case "asama": asama(o.ad); break;
           case "bilgi": el.sonBilgi.textContent = o.mesaj; break;
@@ -366,14 +393,14 @@ async function ozetle() {
             break;
           case "bitti":
             durum.gorunen.sonuc = o.sonuc;
+            durum.gorunen.belgeId = o.belge_id;
             bicimliCiz(o.sonuc.ozet, el.ozet);
             izGoster(o.sonuc);
             gecmiseEkle(durum.gorunen);
             break;
           case "hata": hataGoster(o.mesaj); break;
         }
-      }
-    }
+    });
   } catch (h) {
     if (h.name === "AbortError") {
       notEkle("Durduruldu.", true);
@@ -392,6 +419,156 @@ async function ozetle() {
     }
     // Uyarı açıkken altta ayrıca boş durum gösterme: aynı bilgi uyarıda ve veri izinde var.
     dugmeleriGuncelle();
+  }
+}
+
+// ---------------------------------------------------------------- sorular
+
+function soruOgesi(soru) {
+  const li = yeni("li", null, "sc");
+  li.append(yeni("p", soru, "sc-soru"), yeni("div", null, "sc-cevap"), yeni("p", "", "sc-durum"), yeni("div", null, "sc-ek"));
+  li.querySelector(".sc-durum").hidden = true;
+  return li;
+}
+
+// Cevaptaki [n] kaynak numaralarını tıklanabilir düğmelere çevirir (metin düğümlerini bölerek, HTML'siz).
+function kaynaklariBagla(kok, kaynaklar) {
+  const yuruyen = document.createTreeWalker(kok, NodeFilter.SHOW_TEXT);
+  const dugumler = [];
+  while (yuruyen.nextNode()) dugumler.push(yuruyen.currentNode);
+  for (const dugum of dugumler) {
+    const parcalar = dugum.textContent.split(/(\[\d{1,2}\])/);
+    if (parcalar.length === 1) continue;
+    const kap = document.createDocumentFragment();
+    for (const p of parcalar) {
+      const m = p.match(/^\[(\d{1,2})\]$/);
+      const k = m && kaynaklar[Number(m[1]) - 1];
+      if (k) {
+        const b = yeni("button", m[1], "atif");
+        b.type = "button";
+        b.title = `Kaynak ${m[1]}${k.konum ? ", " + k.konum : ""}`;
+        b.addEventListener("click", () => kaynagiGoster(k));
+        kap.appendChild(b);
+      } else if (p) {
+        kap.appendChild(document.createTextNode(p));
+      }
+    }
+    dugum.replaceWith(kap);
+  }
+}
+
+// Kaynak metin sekmesinde ilgili parçayı vurgular ve ekrana kaydırır.
+function kaynagiGoster(k) {
+  const metin = durum.gorunen.kaynak || "";
+  const bolumler = k.metin.split("\n\n").filter(Boolean);
+  let bas = metin.indexOf(bolumler[0], Math.max(0, k.baslangic - 400));
+  if (bas < 0) bas = metin.indexOf(bolumler[bolumler.length - 1]);
+  if (bas < 0) { sekmeSec("kaynak"); return; }
+  const sonBolum = bolumler[bolumler.length - 1];
+  const sonBas = metin.indexOf(sonBolum, bas);
+  const son = sonBas < 0 ? Math.min(metin.length, bas + k.metin.length) : sonBas + sonBolum.length;
+  const isaret = yeni("mark", metin.slice(bas, son));
+  el.kaynak.replaceChildren(document.createTextNode(metin.slice(0, bas)), isaret, document.createTextNode(metin.slice(son)));
+  sekmeSec("kaynak");
+  isaret.scrollIntoView({ block: "center" });
+}
+
+function cevabiCiz(li, s) {
+  const kutu = li.querySelector(".sc-cevap");
+  bicimliCiz(s.cevap, kutu);
+  kaynaklariBagla(kutu, s.kaynaklar);
+  li.querySelector(".sc-durum").hidden = true;
+  const ek = li.querySelector(".sc-ek");
+  ek.replaceChildren();
+  if (s.kaynaklar.length) {
+    const ayrinti = yeni("details", null, "sc-kaynaklar");
+    ayrinti.appendChild(yeni("summary", `Bulunan parçalar (${s.kaynaklar.length})${s.anlamsal ? "" : ", yalnızca kelime eşleşmesi"}`));
+    const liste = yeni("ol");
+    for (const k of s.kaynaklar) {
+      const oge = yeni("li", null, k.kullanildi ? null : "kullanilmadi");
+      const b = yeni("button");
+      b.type = "button";
+      b.append(yeni("span", `[${k.no}]${k.konum ? " " + k.konum : ""}${k.kullanildi ? "" : " (cevapta kullanılmadı)"}`, "kb"),
+               yeni("span", k.metin, "ko"));
+      b.addEventListener("click", () => kaynagiGoster(k));
+      oge.appendChild(b);
+      liste.appendChild(oge);
+    }
+    ayrinti.appendChild(liste);
+    ek.appendChild(ayrinti);
+  }
+}
+
+async function soruSor(soruMetni, istekSiniri = null, li = null) {
+  const kayit = durum.gorunen;
+  if (!kayit || !kayit.belgeId || durum.calisiyor) return;
+  if (!li) {
+    li = soruOgesi(soruMetni);
+    el.soruListe.appendChild(li);
+  }
+  const kutu = li.querySelector(".sc-cevap");
+  const durumYazi = li.querySelector(".sc-durum");
+  kutu.replaceChildren();
+  li.querySelector(".sc-ek").replaceChildren();
+  durumYazi.hidden = false;
+  durumYazi.textContent = "Belgede aranıyor…";
+  li.scrollIntoView({ block: "nearest" });
+  durum.calisiyor = true;
+  durum.soruSuruyor = true;
+  durum.iptal = new AbortController();
+  el.sor.textContent = "Durdur";
+  el.sor.type = "button";
+  dugmeleriGuncelle();
+
+  let metin = "", cizimBekliyor = false;
+  const ciz = () => { cizimBekliyor = false; bicimliCiz(metin, kutu); };
+  const govde = { belge_id: kayit.belgeId, soru: soruMetni };
+  if (istekSiniri) govde.istek_siniri = istekSiniri;
+  if (!el.model.disabled && el.model.value) govde.model = el.model.value;
+  try {
+    const cevap = await api("/api/sor", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(govde),
+      signal: durum.iptal.signal,
+    });
+    await akisiOku(cevap, (o) => {
+      switch (o.tip) {
+        case "bilgi": case "uyari": durumYazi.textContent = o.mesaj; break;
+        case "not": li.querySelector(".sc-ek").appendChild(yeni("p", o.mesaj, "sc-durum")); break;
+        case "parca":
+          durumYazi.hidden = true;
+          metin += o.metin;
+          if (!cizimBekliyor) { cizimBekliyor = true; requestAnimationFrame(ciz); }
+          break;
+        case "sifirla": metin = ""; kutu.replaceChildren(); break;
+        case "onay_gerekli": {
+          durumYazi.textContent = `Bu soru ${o.gereken} istek gerektiriyor; sınır ${o.sinir}. Henüz bir şey gönderilmedi.`;
+          const onay = yeni("div", null, "sc-onay");
+          const devam = yeni("button", `Devam et (${o.gereken} istek)`, "birincil dikkat");
+          devam.type = "button";
+          devam.addEventListener("click", () => soruSor(soruMetni, o.gereken, li));
+          onay.appendChild(devam);
+          li.querySelector(".sc-ek").appendChild(onay);
+          break;
+        }
+        case "bitti":
+          kayit.sorular.push({ soru: soruMetni, sonuc: o.sonuc });
+          cevabiCiz(li, o.sonuc);
+          if (durum.gorunen === kayit) izGoster(kayit.sonuc);  // "Nereye gitti?" soruları da göstersin
+          break;
+        case "hata": durumYazi.hidden = false; durumYazi.textContent = o.mesaj; durumYazi.classList.add("uyari-yazi"); break;
+      }
+    });
+  } catch (h) {
+    durumYazi.hidden = false;
+    durumYazi.textContent = h.name === "AbortError" ? "Durduruldu." : (h.message || String(h));
+  } finally {
+    durum.calisiyor = false;
+    durum.soruSuruyor = false;
+    durum.iptal = null;
+    el.sor.textContent = "Sor";
+    el.sor.type = "submit";
+    dugmeleriGuncelle();
+    el.soru.focus();
   }
 }
 
@@ -427,6 +604,11 @@ function gecmistenGoster(i) {
   el.kaynak.textContent = k.kaynak;
   el.kaynakBilgi.textContent = `${sayiYaz(k.kaynak.length)} karakter`;
   for (const n of k.notlar) notEkle(n.mesaj, n.uyari);
+  for (const s of k.sorular || []) {
+    const li = soruOgesi(s.soru);
+    el.soruListe.appendChild(li);
+    cevabiCiz(li, s.sonuc);
+  }
   izGoster(k.sonuc);
   gecmisiCiz();
   dugmeleriGuncelle();
@@ -495,18 +677,23 @@ for (const g of document.querySelectorAll('input[name="ocr"], input[name="ses"],
 }
 
 el.sekmeOzet.addEventListener("click", () => sekmeSec("ozet"));
+el.sekmeSoru.addEventListener("click", () => { sekmeSec("soru"); el.soru.focus(); });
 el.sekmeKaynak.addEventListener("click", () => sekmeSec("kaynak"));
-for (const sekme of [el.sekmeOzet, el.sekmeKaynak]) {
+for (const sekme of [el.sekmeOzet, el.sekmeSoru, el.sekmeKaynak]) {
   sekme.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const hedef = sekme === el.sekmeOzet ? el.sekmeKaynak : el.sekmeOzet;
-    if (hedef.disabled) return;
+    const sira = [el.sekmeOzet, el.sekmeSoru, el.sekmeKaynak].filter((s) => !s.disabled);
+    const i = sira.indexOf(sekme);
+    const hedef = sira[(i + (e.key === "ArrowRight" ? 1 : sira.length - 1)) % sira.length];
     hedef.click(); hedef.focus();
   });
 }
 
 el.kopyala.addEventListener("click", async () => {
-  const metin = el.panelKaynak.hidden ? durum.gorunen.sonuc.ozet : durum.gorunen.kaynak;
+  const k = durum.gorunen;
+  const metin = aktifSekme === "kaynak" ? k.kaynak
+    : aktifSekme === "soru" ? k.sorular.map((s) => `S: ${s.soru}\nC: ${s.sonuc.cevap}`).join("\n\n")
+    : k.sonuc.ozet;
   try {
     await navigator.clipboard.writeText(metin);
     el.kopyala.textContent = "Kopyalandı";
@@ -524,6 +711,17 @@ el.indir.addEventListener("click", (e) => {
 });
 for (const b of el.indirMenu.querySelectorAll("button")) b.addEventListener("click", () => indir(b.dataset.bicim));
 document.addEventListener("click", (e) => { if (!el.indirMenu.hidden && !e.target.closest(".indir")) menuyuKapat(); });
+
+el.soruForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const soru = el.soru.value.trim();
+  if (!soru || durum.calisiyor) return;
+  el.soru.value = "";
+  soruSor(soru);
+});
+el.sor.addEventListener("click", (e) => {
+  if (durum.soruSuruyor && durum.iptal) { e.preventDefault(); durum.iptal.abort(); }
+});
 
 el.model.addEventListener("change", () => {
   try { localStorage.setItem(MODEL_ANAHTARI, el.model.value); } catch (_) { /* önemli değil */ }

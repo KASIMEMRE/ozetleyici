@@ -86,6 +86,7 @@
       <div class="okuma-ust">
         <div class="sekmeler" role="tablist" aria-label="Görünüm">
           <button id="sekme-ozet" role="tab" aria-selected="true" aria-controls="panel-ozet" type="button">Özet</button>
+          <button id="sekme-soru" role="tab" aria-selected="false" aria-controls="panel-soru" type="button" tabindex="-1" disabled>Sorular</button>
           <button id="sekme-kaynak" role="tab" aria-selected="false" aria-controls="panel-kaynak" type="button" tabindex="-1" disabled>Kaynak metin</button>
         </div>
         <div class="eylemler">
@@ -136,6 +137,16 @@
           <p class="bos-durum">Bir dosya seç, özet burada görünür.</p>
         </div>
       </article>
+      <div id="panel-soru" class="panel" role="tabpanel" aria-labelledby="sekme-soru" hidden>
+        <ol id="soru-liste" class="soru-liste"></ol>
+        <form id="soru-form" class="soru-form">
+          <label for="soru" class="ekran-okuyucu">Soru</label>
+          <input id="soru" class="metin-girdi" type="text" maxlength="500" autocomplete="off"
+                 placeholder="Belgeyle ilgili bir soru yaz">
+          <button id="sor" class="birincil" type="submit">Sor</button>
+        </form>
+        <p class="ince">Cevaplar yalnızca bu belgeden gelir. Köşeli parantezdeki numaraya tıklayınca kaynağı görürsün.</p>
+      </div>
       <div id="panel-kaynak" class="panel" role="tabpanel" aria-labelledby="sekme-kaynak" hidden>
         <p id="kaynak-bilgi" class="ince"></p>
         <pre id="kaynak" class="kaynak" tabindex="0"></pre>

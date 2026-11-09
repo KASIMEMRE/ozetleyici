@@ -34,6 +34,12 @@ class SahteIstemci:
     def modelleri_listele(self):
         return ["sahte-model", "gemini-buyuk-pro", "gemini-hizli-flash", "gemini-embedding-001"]
 
+    def gom(self, metinler, model):
+        if self.butce:
+            self.butce.harca()
+        from tests.test_soru import kelime_vektoru
+        return [kelime_vektoru(m) for m in metinler]
+
     def gorseli_metne_cevir(self, png):
         self.gorseller.append(png)
         self.okuma_girdi_token += 100
@@ -444,3 +450,135 @@ def test_odak_modele_iletilir():
 
 def test_cok_uzun_odak_reddedilir():
     assert gonder(istemci(), b"m", odak="x" * 301).status_code == 400
+
+
+
+# ------------------------------------------------------------------ belgeye soru sorma
+
+POLITIKA = ("Uzaktan çalışma politikası.\n\nKaybolan veya çalınan cihaz 24 saat içinde bilgi güvenliği "
+            "ekibine bildirilir.\n\nŞirket aylık 400 TL internet desteği verir.").encode()
+
+
+def ozetle_ve_kimlik(c, veri=POLITIKA):
+    o = olaylar(gonder(c, veri))
+    assert o[-1]["tip"] == "bitti" and o[-1]["belge_id"]
+    return o[-1]["belge_id"]
+
+
+def sor(c, govde, oturum=OTURUM):
+    return c.post("/api/sor", json=govde, headers={"X-Oturum-Anahtari": oturum} if oturum else {})
+
+
+class CevaplayanIstemci(SahteIstemci):
+    def tamamla(self, sistem, kullanici, uretim, parca_gelince=None, akis_sifirlandi=None):
+        if self.butce:
+            self.butce.harca()
+        metin = "Cihaz 24 saat içinde bildirilir [1]." if "<alinti" in kullanici else "Özet."
+        if parca_gelince:
+            parca_gelince(metin)
+        return LLMCevabi(metin, 30, 8, 1, model=self.model)
+
+
+def test_ozetten_sonra_soru_sorulur_ve_kaynak_doner():
+    c = istemci(fabrika=CevaplayanIstemci)
+    kimlik = ozetle_ve_kimlik(c)
+    o = olaylar(sor(c, {"belge_id": kimlik, "soru": "Kaybolan cihaz ne zaman bildirilir?"}))
+    assert [x["metin"] for x in o if x["tip"] == "parca"] == ["Cihaz 24 saat içinde bildirilir [1]."]
+    s = o[-1]["sonuc"]
+    assert o[-1]["tip"] == "bitti" and s["anlamsal"] is True
+    assert s["kaynaklar"][0]["kullanildi"] and "24 saat" in s["kaynaklar"][0]["metin"]
+    kaynak = s["kaynaklar"][0]
+    assert POLITIKA.decode()[kaynak["baslangic"]:].startswith(kaynak["metin"][:15])
+
+
+def test_bilinmeyen_belge_404():
+    assert sor(istemci(), {"belge_id": "yok", "soru": "soru"}).status_code == 404
+
+
+def test_soru_oturum_anahtari_ister():
+    assert sor(istemci(), {"belge_id": "x", "soru": "soru"}, oturum=None).status_code == 403
+
+
+@pytest.mark.parametrize("govde,kod", [
+    ({"belge_id": "x", "soru": ""}, 400),
+    ({"belge_id": "x", "soru": "x" * 501}, 400),
+    ({"belge_id": "x", "soru": "a", "istek_siniri": 0}, 400),
+    ({"belge_id": "x", "soru": "a", "istek_siniri": "çok"}, 400),
+    ([1, 2], 400),
+])
+def test_gecersiz_soru_istekleri(govde, kod):
+    assert sor(istemci(), govde).status_code == kod
+
+
+def test_cok_buyuk_istek_reddedilir():
+    c = istemci()
+    cevap = c.post("/api/sor", content=b"{" + b" " * 9000 + b"}", headers={"X-Oturum-Anahtari": OTURUM})
+    assert cevap.status_code == 413
+
+
+def test_kisisel_veride_durulan_belgeye_soru_sorulamaz():
+    o = olaylar(gonder(istemci(), "Müşteri: ayse@example.com".encode()))
+    assert o[-1]["tip"] == "kisisel_veri" and "belge_id" not in o[-1]
+
+
+def test_soru_butcesi_asilinca_onay_istenir():
+    ayar = Ayarlar(api_anahtari=ANAHTAR, base_url="https://sahte.local/v1", model="m", istek_siniri=2)
+    c = istemci(ayar_yukleyici=lambda: ayar, fabrika=CevaplayanIstemci)
+    kimlik = ozetle_ve_kimlik(c)
+    o = olaylar(sor(c, {"belge_id": kimlik, "soru": "cihaz"}))
+    assert o[-1]["tip"] == "onay_gerekli" and o[-1]["gereken"] == 3  # 1 gömme + 1 soru vektörü + 1 cevap
+    o = olaylar(sor(c, {"belge_id": kimlik, "soru": "cihaz", "istek_siniri": 3}))
+    assert o[-1]["tip"] == "bitti" and o[-1]["sonuc"]["kullanilan_istek"] == 3
+
+
+def test_ikinci_soruda_belge_yeniden_gomulmez():
+    c = istemci(fabrika=CevaplayanIstemci)
+    kimlik = ozetle_ve_kimlik(c)
+    olaylar(sor(c, {"belge_id": kimlik, "soru": "cihaz"}))
+    o = olaylar(sor(c, {"belge_id": kimlik, "soru": "internet desteği"}))
+    assert o[-1]["sonuc"]["kullanilan_istek"] == 2  # soru vektörü + cevap
+
+
+def test_embedding_yoksa_kelime_aramasiyla_cevaplar():
+    from ozetleyici.llm import GommeKullanilamiyor
+
+    class GommesizIstemci(CevaplayanIstemci):
+        def gom(self, metinler, model):
+            raise GommeKullanilamiyor("bu sağlayıcıda embedding yok")
+
+    c = istemci(fabrika=GommesizIstemci)
+    kimlik = ozetle_ve_kimlik(c)
+    o = olaylar(sor(c, {"belge_id": kimlik, "soru": "Kaybolan cihaz?"}))
+    assert o[-1]["tip"] == "bitti" and o[-1]["sonuc"]["anlamsal"] is False
+    assert any("kelime eşleşmesiyle" in x["mesaj"] for x in o if x["tip"] == "not")
+
+
+def test_belge_deposu_sinirlari():
+    from ozetleyici.web.uygulama import BelgeDeposu
+    depo = BelgeDeposu(en_fazla=2, omur_sn=3600)
+    a, b, c_ = depo.ekle("a", "metin a"), depo.ekle("b", "metin b"), depo.ekle("c", "metin c")
+    assert depo.al(a) is None and depo.al(b) and depo.al(c_)  # en eskisi silindi
+    eski = BelgeDeposu(omur_sn=-1)
+    kimlik = eski.ekle("x", "metin")
+    assert eski.al(kimlik) is None  # süresi doldu
+    assert len(a) >= 20  # tahmin edilemez kimlik
+
+
+def test_soru_ve_ozet_ayni_anda_calismaz():
+    import threading
+    bekle, devam = threading.Event(), threading.Event()
+
+    class Yavas(CevaplayanIstemci):
+        def tamamla(self, sistem, kullanici, *a, **k):
+            if "<alinti" in kullanici:
+                bekle.set(); devam.wait(5)
+            return super().tamamla(sistem, kullanici, *a, **k)
+
+    c = istemci(fabrika=Yavas)
+    kimlik = ozetle_ve_kimlik(c)
+    sonuc = {}
+    t = threading.Thread(target=lambda: sonuc.setdefault("s", sor(c, {"belge_id": kimlik, "soru": "cihaz"})))
+    t.start(); assert bekle.wait(5)
+    assert gonder(c, b"ikinci belge").status_code == 429
+    devam.set(); t.join(5)
+    assert olaylar(sonuc["s"])[-1]["tip"] == "bitti"

@@ -394,3 +394,60 @@ def test_modelleri_listele(monkeypatch):
     ist = istemci_kur(lambda istek: httpx2.Response(200, json=govde), monkeypatch, butce=IstekButcesi(1))
     assert ist.modelleri_listele() == ["gemini-3.5-flash", "gemma-4-31b-it"]
     assert ist.butce.kullanilan == 0  # listeleme bütçeden düşmez
+
+
+# ------------------------------------------------------------------ embedding
+
+def gomme_govdesi(adet, boyut=3):
+    return {"object": "list", "model": "e",
+            "data": [{"object": "embedding", "index": i, "embedding": [float(i + 1)] * boyut} for i in reversed(range(adet))],
+            "usage": {"prompt_tokens": 7 * adet, "total_tokens": 7 * adet}}
+
+
+def test_gom_gruplar_halinde_ve_sirali(monkeypatch):
+    gruplar = []
+
+    def isleyici(istek):
+        govde = json.loads(istek.content)
+        gruplar.append(len(govde["input"]))
+        return httpx2.Response(200, json=gomme_govdesi(len(govde["input"])))
+
+    butce = IstekButcesi(10)
+    ist = istemci_kur(isleyici, monkeypatch, butce=butce)
+    vektorler = ist.gom([f"metin {i}" for i in range(5)], "e", grup=2)
+    assert gruplar == [2, 2, 1] and butce.kullanilan == 3
+    assert vektorler[0] == [1.0] * 3 and vektorler[1] == [2.0] * 3  # sağlayıcı ters sırada döndürse de
+    assert ist.gomme_token == 35
+
+
+def test_gom_grup_buyuk_bulunursa_kucultur(monkeypatch):
+    def isleyici(istek):
+        adet = len(json.loads(istek.content)["input"])
+        if adet > 2:
+            return httpx2.Response(400, json={"error": {"message": "at most 2 requests can be in one batch"}})
+        return httpx2.Response(200, json=gomme_govdesi(adet))
+
+    butce = IstekButcesi(10)
+    vektorler = istemci_kur(isleyici, monkeypatch, butce=butce).gom(["a", "b", "c", "d"], "e", grup=8)
+    assert len(vektorler) == 4 and butce.kullanilan == 2  # reddedilenler iade edildi
+
+
+def test_gom_desteklenmiyorsa_ozel_hata(monkeypatch):
+    from ozetleyici.llm import GommeKullanilamiyor
+    isleyici = lambda istek: httpx2.Response(404, json={"error": {"message": "Not found"}})
+    with pytest.raises(GommeKullanilamiyor, match="kullanılamıyor"):
+        istemci_kur(isleyici, monkeypatch).gom(["a"], "e")
+
+
+def test_gom_butceyi_asamaz(monkeypatch):
+    isleyici = lambda istek: httpx2.Response(200, json=gomme_govdesi(len(json.loads(istek.content)["input"])))
+    with pytest.raises(ButceAsildi):
+        istemci_kur(isleyici, monkeypatch, butce=IstekButcesi(1)).gom(["a", "b", "c"], "e", grup=1)
+
+
+def test_gom_index_alani_olmayan_cevap(monkeypatch):
+    """Gemini'nin OpenAI uyumlu ucu embedding'lerde 'index' göndermeyebilir: sıra korunmalı."""
+    govde = {"object": "list", "model": "g", "data": [
+        {"object": "embedding", "embedding": [0.1, 0.2]}, {"object": "embedding", "embedding": [0.3, 0.4]}]}
+    ist = istemci_kur(lambda istek: httpx2.Response(200, json=govde), monkeypatch)
+    assert ist.gom(["a", "b"], "g") == [[0.1, 0.2], [0.3, 0.4]]

@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 import threading
 import webbrowser
+
+
+class _AnahtarGizleyici(logging.Formatter):
+    """Terminale yazılan hata ayrıntısında (traceback dahil) API anahtarı görünmesin."""
+
+    def format(self, kayit: logging.LogRecord) -> str:
+        from ..ayarlar import anahtari_gizle
+
+        return anahtari_gizle(super().format(kayit), os.environ.get("LLM_API_KEY"))
+
+
+def _terminale_hata_yaz() -> None:
+    """Uyarı ve hataları (beklenmeyen hatanın traceback'i dahil) terminale yazar."""
+    isleyici = logging.StreamHandler(sys.stderr)
+    isleyici.setLevel(logging.WARNING)
+    isleyici.setFormatter(_AnahtarGizleyici("[%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger("ozetleyici").addHandler(isleyici)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     from .uygulama import uygulama_olustur
 
     load_dotenv()
+    _terminale_hata_yaz()
     # Bilerek 127.0.0.1: uygulamada kullanıcı girişi yok. Ağa açılırsa aynı ağdaki
     # herkes senin API anahtarınla, senin hesabına özet yaptırabilir.
     host = "127.0.0.1"

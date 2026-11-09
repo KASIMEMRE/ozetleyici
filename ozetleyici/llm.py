@@ -39,6 +39,10 @@ class ButceAsildi(LLMHatasi):
         )
 
 
+class GommeKullanilamiyor(LLMHatasi):
+    """Sağlayıcı veya model embedding (gömme) sunmuyor ya da şu an veremiyor."""
+
+
 class IptalEdildi(LLMHatasi):
     """Kullanıcı işi durdurdu (ör. tarayıcı sekmesini kapattı)."""
 
@@ -65,6 +69,10 @@ class IstekButcesi:
     def on_kontrol(self, ek_istek: int) -> None:
         if self.kullanilan + ek_istek > self.sinir:
             raise ButceAsildi(self.kullanilan + ek_istek, self.sinir)
+
+    def iade(self) -> None:
+        """Reddedilen ve aynı iş için yeniden gönderilecek bir isteği geri say."""
+        self.kullanilan = max(0, self.kullanilan - 1)
 
     def harca(self) -> None:
         if self.iptal.is_set():
@@ -100,6 +108,8 @@ class UretimAyarlari:
     top_p: float | None = None
     max_token: int = 1024
 
+
+GOMME_GRUBU = 100  # tek embedding isteğinde gönderilen en fazla metin
 
 # Bu hatalar geçicidir: biraz bekleyip yeniden denemek mantıklı.
 GECICI_HATALAR = (
@@ -141,6 +151,7 @@ class LLMIstemcisi:
         # Görüntü ve ses okuma için harcanan token'lar; özet maliyetine eklenir.
         self.okuma_girdi_token = 0
         self.okuma_cikti_token = 0
+        self.gomme_token = 0
         # max_retries=0: yeniden denemeyi kütüphaneye bırakmıyoruz,
         # aşağıda kendimiz yazıyoruz ki nasıl çalıştığını görelim.
         self._istemci = openai.OpenAI(
@@ -198,6 +209,67 @@ class LLMIstemcisi:
                     continue
                 raise self._hata(str(hata)) from hata.__cause__
         raise AssertionError("buraya ulaşılmamalı")
+
+    def gom(self, metinler: list[str], model: str, grup: int = GOMME_GRUBU) -> list[list[float]]:
+        """Metinleri embedding vektörlerine çevirir; her grup bir API isteğidir.
+
+        Sağlayıcı grubu büyük bulursa grup küçültülür. Embedding sunulmuyorsa
+        GommeKullanilamiyor fırlatılır; çağıran kelime aramasına düşebilir.
+        """
+        sonuc: list[list[float]] = []
+        i = 0
+        deneme = 1
+        while i < len(metinler):
+            dilim = metinler[i:i + grup]
+            if self.butce is not None:
+                self.butce.harca()
+            try:
+                cevap = self._istemci.embeddings.create(model=model, input=dilim)
+            except openai.AuthenticationError as hata:
+                raise self._hata("API anahtarı geçersiz (401).") from hata
+            except (openai.NotFoundError, openai.PermissionDeniedError) as hata:
+                raise GommeKullanilamiyor(f"'{model}' embedding modeli bu sağlayıcıda kullanılamıyor.") from hata
+            except openai.BadRequestError as hata:
+                ayrinti = _hata_ayrintisi(hata).lower()
+                if grup > 1 and any(k in ayrinti for k in ("batch", "too many", "at most", "maximum", "limit")):
+                    if self.butce is not None:
+                        self.butce.iade()
+                    grup = max(1, grup // 2)
+                    log.info("Sağlayıcı grubu büyük buldu; %d'lik gruplarla yeniden deneniyor.", grup)
+                    continue
+                raise GommeKullanilamiyor(f"Embedding isteği reddedildi: {_hata_ayrintisi(hata)}") from hata
+            except openai.RateLimitError as hata:
+                ayrinti = _hata_ayrintisi(hata)
+                if "limit: 0" in ayrinti or "perday" in ayrinti.lower().replace(" ", "") or deneme >= self.en_fazla_deneme:
+                    raise GommeKullanilamiyor(f"Embedding kotası kullanılamıyor: {ayrinti}") from hata
+                if self.butce is not None:
+                    self.butce.iade()
+                self._iptal_bekle(_bekleme_suresi(deneme, hata))
+                deneme += 1
+                continue
+            except (openai.InternalServerError, openai.APIConnectionError) as hata:
+                if deneme >= self.en_fazla_deneme:
+                    raise GommeKullanilamiyor(f"Embedding alınamadı ({type(hata).__name__}).") from hata
+                if self.butce is not None:
+                    self.butce.iade()
+                self._iptal_bekle(_bekleme_suresi(deneme, hata))
+                deneme += 1
+                continue
+            veriler = list(cevap.data or [])
+            if len(veriler) != len(dilim):
+                raise GommeKullanilamiyor("Sağlayıcı eksik embedding döndürdü.")
+            # Bazı sağlayıcılar (ör. Gemini) 'index' alanını boş bırakır; o zaman gönderilen sıra geçerlidir.
+            if all(isinstance(getattr(d, "index", None), int) for d in veriler):
+                veriler.sort(key=lambda d: d.index)
+            for d in veriler:
+                if not isinstance(d.embedding, list) or not d.embedding:
+                    raise GommeKullanilamiyor("Sağlayıcı beklenmeyen biçimde embedding döndürdü.")
+            sonuc.extend(d.embedding for d in veriler)
+            if cevap.usage is not None:
+                self.gomme_token += cevap.usage.prompt_tokens or 0
+            i += len(dilim)
+            deneme = 1
+        return sonuc
 
     def modelleri_listele(self) -> list[str]:
         """Bu anahtarın erişebildiği modellerin adları (istek bütçesinden düşmez, ücretsizdir)."""

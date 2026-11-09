@@ -21,6 +21,8 @@ import logging
 import queue
 import secrets
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -33,13 +35,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import __version__
-from ..ayarlar import AyarHatasi, Ayarlar, anahtari_gizle, ayarlari_yukle, whisper_modeli
+from ..ayarlar import AyarHatasi, Ayarlar, anahtari_gizle, ayarlari_yukle, gomme_modeli, whisper_modeli
 from ..cikti import sonuc_sozlugu
 from ..gizlilik import kisisel_veri_ipuclari
 from ..modeller import ozet_modelleri
 from ..llm import ButceAsildi, IptalEdildi, IstekButcesi, LLMHatasi, LLMIstemcisi, UretimAyarlari
 from ..okuyucular import DESTEKLENEN_UZANTILAR, MEDYA_UZANTILARI, OcrAyari, OkumaHatasi, belgeyi_oku, tesseract_yolu
 from ..ozetle import EN_UZUN_ODAK, UZUNLUKLAR, gereken_istek_sayisi, ozetle
+from ..soru import EN_UZUN_SORU, BelgeIndeksi, soruyu_cevapla
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +65,48 @@ GUVENLIK_BASLIKLARI = {
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
+
+
+@dataclass
+class _DepoKaydi:
+    ad: str
+    indeks: BelgeIndeksi
+    zaman: float = field(default_factory=time.monotonic)
+
+
+class BelgeDeposu:
+    """Soru sorulabilecek belgeler: yalnızca bellekte, en fazla `en_fazla` belge ve `omur_sn` saniye.
+
+    Kimlik tahmin edilemez rastgele bir değerdir; diske hiçbir şey yazılmaz.
+    """
+
+    def __init__(self, en_fazla: int = 5, omur_sn: float = 3600) -> None:
+        self.en_fazla, self.omur_sn = en_fazla, omur_sn
+        self._kayitlar: OrderedDict[str, _DepoKaydi] = OrderedDict()
+        self._kilit = threading.Lock()
+
+    def _temizle(self) -> None:
+        simdi = time.monotonic()
+        for kimlik in [k for k, v in self._kayitlar.items() if simdi - v.zaman > self.omur_sn]:
+            del self._kayitlar[kimlik]
+        while len(self._kayitlar) > self.en_fazla:
+            self._kayitlar.popitem(last=False)  # en eskisi gider
+
+    def ekle(self, ad: str, metin: str) -> str:
+        kimlik = secrets.token_urlsafe(16)
+        indeks = BelgeIndeksi(metin)  # parçalama ve kelime indeksi burada; embedding ilk soruda
+        with self._kilit:
+            self._kayitlar[kimlik] = _DepoKaydi(ad, indeks)
+            self._temizle()
+        return kimlik
+
+    def al(self, kimlik: str) -> _DepoKaydi | None:
+        with self._kilit:
+            self._temizle()
+            kayit = self._kayitlar.get(kimlik)
+            if kayit is not None:
+                self._kayitlar.move_to_end(kimlik)
+            return kayit
 
 
 class _IsGunlugu(logging.Handler):
@@ -151,6 +196,121 @@ def uygulama_olustur(
             "mesgul": is_kilidi.locked(),
         }
 
+    belgeler = BelgeDeposu()
+
+    def is_akisi(calistir: Callable[[Callable[[dict], None], threading.Event], None], etiket: str) -> StreamingResponse:
+        """İşi ayrı iş parçacığında çalıştırır, olaylarını NDJSON olarak tarayıcıya akıtır.
+
+        Aynı anda tek iş (API kotası korunur). Tarayıcı bağlantıyı kapatırsa iptal kurulur;
+        iş bir sonraki API isteğinden önce durur.
+        """
+        if not is_kilidi.acquire(blocking=False):
+            raise HTTPException(429, "Başka bir iş sürüyor; bitmesini bekle.")
+        olaylar: queue.Queue = queue.Queue()
+        BITTI = object()
+        iptal = threading.Event()
+
+        def gonder(olay: dict) -> None:
+            olaylar.put(olay)
+
+        def is_() -> None:
+            # Kilidi işi yapan iş parçacığı bırakır: sekme kapansa bile iş bitene kadar ikinci iş başlamaz.
+            gunluk = _IsGunlugu(threading.get_ident(), gonder)
+            kok = logging.getLogger("ozetleyici")
+            kok.addHandler(gunluk)
+            onceki_seviye = kok.level
+            if kok.level == logging.NOTSET or kok.level > logging.INFO:
+                kok.setLevel(logging.INFO)
+            try:
+                calistir(gonder, iptal)
+            except ButceAsildi as hata:
+                gonder({"tip": "onay_gerekli", "gereken": hata.gereken, "sinir": hata.sinir})
+            except IptalEdildi:
+                log.info("İş iptal edildi (%s)", etiket)
+            except (OkumaHatasi, AyarHatasi, LLMHatasi, ValueError) as hata:
+                # LLMHatasi mesajlarındaki anahtar istemci tarafından zaten gizlendi.
+                gonder({"tip": "hata", "mesaj": str(hata)})
+            except Exception:  # beklenmeyen hata: ayrıntı sunucu günlüğüne, tarayıcıya genel mesaj
+                log.exception("Beklenmeyen hata (%s)", etiket)
+                gonder({"tip": "hata", "mesaj": "Beklenmeyen bir hata oluştu. Ayrıntı terminalde."})
+            finally:
+                kok.removeHandler(gunluk)
+                kok.setLevel(onceki_seviye)
+                is_kilidi.release()
+                olaylar.put(BITTI)
+
+        threading.Thread(target=is_, name=f"is-{etiket}", daemon=True).start()
+
+        async def akis():
+            try:
+                while True:
+                    olay = await asyncio.to_thread(olaylar.get)
+                    if olay is BITTI:
+                        return
+                    yield (json.dumps(olay, ensure_ascii=False) + "\n").encode("utf-8")
+            finally:
+                # Normal bitişte de, sekme kapandığında da buraya gelinir.
+                iptal.set()
+
+        return StreamingResponse(akis(), media_type="application/x-ndjson")
+
+    async def model_dogrula(model: str, ayarlar_: Ayarlar) -> str | None:
+        """İstemciden gelen model adını yalnızca listede varsa kabul eder."""
+        if not model or model == ayarlar_.model:
+            return None
+        liste, _ = await asyncio.to_thread(model_listesi, ayarlar_)
+        if model not in liste:
+            raise HTTPException(400, "Bu model listede yok.")
+        return model
+
+    @app.post("/api/sor")
+    async def sor(request: Request) -> StreamingResponse:
+        oturumu_dogrula(request)
+        govde = await request.body()
+        if len(govde) > 8192:
+            raise HTTPException(413, "İstek çok büyük.")
+        try:
+            veri = json.loads(govde or b"{}")
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Geçersiz JSON.")
+        if not isinstance(veri, dict):
+            raise HTTPException(400, "Geçersiz istek.")
+        soru = str(veri.get("soru", "")).strip()
+        if not soru or len(soru) > EN_UZUN_SORU:
+            raise HTTPException(400, f"Soru 1-{EN_UZUN_SORU} karakter olmalı.")
+        istek_siniri = veri.get("istek_siniri")
+        if istek_siniri is not None and (not isinstance(istek_siniri, int) or not 1 <= istek_siniri <= 1000):
+            raise HTTPException(400, "İstek sınırı 1 ile 1000 arasında olmalı.")
+        kayit = belgeler.al(str(veri.get("belge_id", "")))
+        if kayit is None:
+            raise HTTPException(404, "Belge bellekte yok (1 saatten eski olabilir ya da sunucu yeniden başladı). "
+                                     "Dosyayı yeniden özetle.")
+        try:
+            ayarlar = ayar_yukleyici()
+        except AyarHatasi as hata:
+            raise HTTPException(400, str(hata))
+        secilen = await model_dogrula(str(veri.get("model", "")), ayarlar)
+
+        def calistir(gonder, iptal) -> None:
+            ayarlar_ = replace(ayarlar, model=secilen) if secilen else ayarlar
+            butce = IstekButcesi(istek_siniri or ayarlar_.istek_siniri, iptal=iptal)
+            istemci = istemci_fabrikasi(ayarlar_, butce=butce)
+            gonder({"tip": "asama", "ad": "arama"})
+            sonuc = soruyu_cevapla(
+                kayit.indeks, soru, istemci, gomme_modeli(),
+                parca_gelince=lambda p: gonder({"tip": "parca", "metin": p}),
+                akis_sifirlandi=lambda: gonder({"tip": "sifirla"}),
+            )
+            for not_ in sonuc.notlar:
+                gonder({"tip": "not", "mesaj": not_})
+            gonder({"tip": "bitti", "sonuc": {
+                "soru": sonuc.soru, "cevap": sonuc.cevap, "kaynaklar": sonuc.kaynaklar, "anlamsal": sonuc.anlamsal,
+                "model": sonuc.model, "kullanilan_istek": butce.kullanilan, "sure_sn": sonuc.sure_sn,
+                "girdi_token": sonuc.girdi_token, "cikti_token": sonuc.cikti_token, "gomme_token": sonuc.gomme_token,
+            }})
+
+        return is_akisi(calistir, f"soru-{kayit.ad}")
+
     @app.get("/api/modeller")
     async def modeller(request: Request) -> dict:
         oturumu_dogrula(request)
@@ -184,12 +344,8 @@ def uygulama_olustur(
                 ayarlar_ = ayar_yukleyici()
             except AyarHatasi as hata:
                 raise HTTPException(400, str(hata))
-            if model != ayarlar_.model:
-                # Yalnızca listede olan model kabul edilir (istemciden gelen değere güvenme).
-                liste, _ = await asyncio.to_thread(model_listesi, ayarlar_)
-                if model not in liste:
-                    raise HTTPException(400, "Bu model listede yok.")
-                secilen_model = model
+            # Yalnızca listede olan model kabul edilir (istemciden gelen değere güvenme).
+            secilen_model = await model_dogrula(model, ayarlar_)
         medya_mi = Path(dosya_adi).suffix.lower() in MEDYA_UZANTILARI
         sinir = EN_BUYUK_MEDYA if medya_mi else EN_BUYUK_YUKLEME
         if istek_siniri is not None and not 1 <= istek_siniri <= 1000:
@@ -210,59 +366,12 @@ def uygulama_olustur(
         if not veri:
             raise HTTPException(400, "Dosya boş.")
 
-        if not is_kilidi.acquire(blocking=False):
-            raise HTTPException(429, "Başka bir belge işleniyor; bitmesini bekle.")
+        def calistir(gonder, iptal) -> None:
+            _isle(veri, dosya_adi, uzunluk, ocr, ses, yine_de_gonder, gonder,
+                  ayar_yukleyici, istemci_fabrikasi, istek_siniri, iptal, transkriptor, secilen_model, odak,
+                  belgeler.ekle)
 
-        olaylar: queue.Queue = queue.Queue()
-        BITTI = object()
-        iptal = threading.Event()  # tarayıcı bağlantıyı kapatınca kurulur
-
-        def gonder(olay: dict) -> None:
-            olaylar.put(olay)
-
-        def is_() -> None:
-            # Kilidi işi yapan iş parçacığı bırakır: tarayıcı sekmesi kapansa bile
-            # iş bitene kadar ikinci bir iş başlamaz.
-            gunluk = _IsGunlugu(threading.get_ident(), gonder)
-            kok = logging.getLogger("ozetleyici")
-            kok.addHandler(gunluk)
-            onceki_seviye = kok.level
-            if kok.level == logging.NOTSET or kok.level > logging.INFO:
-                kok.setLevel(logging.INFO)
-            try:
-                _isle(veri, dosya_adi, uzunluk, ocr, ses, yine_de_gonder, gonder,
-                      ayar_yukleyici, istemci_fabrikasi, istek_siniri, iptal, transkriptor, secilen_model, odak)
-            except ButceAsildi as hata:
-                gonder({"tip": "onay_gerekli", "gereken": hata.gereken, "sinir": hata.sinir})
-            except IptalEdildi:
-                log.info("İş iptal edildi (%s)", dosya_adi)
-            except (OkumaHatasi, AyarHatasi, LLMHatasi, ValueError) as hata:
-                # LLMHatasi mesajlarındaki anahtar istemci tarafından zaten gizlendi.
-                gonder({"tip": "hata", "mesaj": str(hata)})
-            except Exception:  # beklenmeyen hata: ayrıntı sunucu günlüğüne, tarayıcıya genel mesaj
-                log.exception("Beklenmeyen hata (%s)", dosya_adi)
-                gonder({"tip": "hata", "mesaj": "Beklenmeyen bir hata oluştu. Ayrıntı terminalde."})
-            finally:
-                kok.removeHandler(gunluk)
-                kok.setLevel(onceki_seviye)
-                is_kilidi.release()
-                olaylar.put(BITTI)
-
-        threading.Thread(target=is_, name=f"ozet-{dosya_adi}", daemon=True).start()
-
-        async def akis():
-            try:
-                while True:
-                    olay = await asyncio.to_thread(olaylar.get)
-                    if olay is BITTI:
-                        return
-                    yield (json.dumps(olay, ensure_ascii=False) + "\n").encode("utf-8")
-            finally:
-                # Normal bitişte de, tarayıcı sekmeyi kapattığında da buraya gelinir.
-                # İş sürüyorsa bir sonraki API isteğinden önce durur: para harcamaya devam etmez.
-                iptal.set()
-
-        return StreamingResponse(akis(), media_type="application/x-ndjson")
+        return is_akisi(calistir, dosya_adi)
 
     @app.exception_handler(HTTPException)
     async def http_hatasi(request: Request, hata: HTTPException) -> JSONResponse:
@@ -288,7 +397,7 @@ def _isle(veri: bytes, ad: str, uzunluk: str, ocr_kipi: str, ses_kipi: str, yine
           gonder: Callable[[dict], None], ayar_yukleyici, istemci_fabrikasi,
           istek_siniri: int | None, iptal: threading.Event,
           transkriptor: Callable[[bytes, str], str] | None, secilen_model: str | None = None,
-          odak: str = "") -> None:
+          odak: str = "", depola: Callable[[str, str], str] | None = None) -> None:
     gonder({"tip": "asama", "ad": "okuma"})
     gonder({"tip": "bilgi", "mesaj": f"{ad} okunuyor..."})
     ayarlar = ayar_yukleyici()  # ağ isteği yapmaz; yalnızca .env okunur
@@ -351,4 +460,7 @@ def _isle(veri: bytes, ad: str, uzunluk: str, ocr_kipi: str, ses_kipi: str, yine
         "odak": odak or None,
     }
     sozluk = sonuc_sozlugu(sonuc, ad, ek)
-    gonder({"tip": "bitti", "sonuc": json.loads(anahtari_gizle(json.dumps(sozluk, ensure_ascii=False), ayarlar.api_anahtari))})
+    # Belgeye sonradan soru sorulabilsin diye metni bellekte tut (diske yazılmaz, 1 saat sonra silinir).
+    belge_id = depola(ad, okuma.metin) if depola else None
+    gonder({"tip": "bitti", "belge_id": belge_id,
+            "sonuc": json.loads(anahtari_gizle(json.dumps(sozluk, ensure_ascii=False), ayarlar.api_anahtari))})

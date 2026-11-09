@@ -98,3 +98,10 @@ def whisper_modeli() -> str:
     if ad not in WHISPER_MODELLERI:
         raise AyarHatasi(f"WHISPER_MODELI şunlardan biri olmalı: {', '.join(WHISPER_MODELLERI)} (gelen: {ad!r}).")
     return ad
+
+
+
+def gomme_modeli() -> str | None:
+    """Belgeye soru sormada kullanılan embedding modeli. "yok" yazılırsa yalnızca kelime araması."""
+    ad = os.getenv("LLM_EMBEDDING_MODELI", "gemini-embedding-001").strip()
+    return None if ad.lower() in ("", "yok", "kapali", "none") else ad

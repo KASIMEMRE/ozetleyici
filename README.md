@@ -77,6 +77,7 @@ Tarayıcı kendiliğinden `http://127.0.0.1:8765` adresini açar. Arayüzde:
 - **Kaynak metin** sekmesi modelin gördüğü metni gösterir; ses ve videoda bu, yazıya dökülmüş konuşmadır.
 - **Veri izi**, neyin bu bilgisayarda kaldığını ve neyin modele gittiğini (kaç karakter, kaç görüntü veya ses parçası) gösterir.
 - Uzun işlerde aşama, geçen süre ve **Durdur** düğmesi görünür; durdurunca sıradaki istek gönderilmez.
+- **Sorular** sekmesinde özetlenen belgeye soru sorabilirsin (aşağıya bak).
 - Özeti Markdown, düz metin veya JSON olarak indirebilirsin. **Bu oturumda** listesi önceki özetlere döner;
   yalnızca bellekte tutulur, sayfayı kapatınca silinir.
  Sağ üstten modeli seçebilirsin: liste,
@@ -84,6 +85,26 @@ anahtarının erişebildiği ve metin üreten modellerden oluşur (ses/görsel �
 Seçimin tarayıcıda hatırlanır. Dosyayı sürükle-bırak, uzunluğu ve taranmış
 sayfaların nasıl okunacağını seç, **Özetle**'ye bas. Özet yazıldıkça görünür; bitince kopyalayabilir veya
 JSON olarak indirebilirsin. Durdurmak için terminalde Ctrl+C.
+
+## Belgeye soru sorma
+
+Özet bittikten sonra **Sorular** sekmesinde belgeyle ilgili soru sorabilirsin. Cevap yalnızca belgeden gelir ve
+her bilginin yanında kaynak numarası bulunur (`[1]`); numaraya tıklayınca ilgili parça **Kaynak metin**
+sekmesinde vurgulanır. Belgede cevap yoksa "Belgede bu sorunun cevabını bulamadım." der.
+
+Nasıl çalışır (RAG, getirme destekli üretim):
+
+1. Belge, sayfa/slayt/zaman bilgisi korunarak ~1.000 karakterlik, birbirine biraz taşan parçalara bölünür.
+   Parçalar sayfa ve slayt sınırını aşmaz; ses dökümünde parçanın zaman aralığı gösterilir.
+2. İlk soruda parçalar embedding vektörüne çevrilir (100'erli gruplar, her grup bir istek); sonraki sorularda
+   yalnızca sorunun kendisi çevrilir.
+3. **Hibrit arama:** anlam benzerliği (vektörler) ile kelime eşleşmesi (BM25, Türkçe için kaba kök: ilk 5 harf)
+   birleştirilir; tutar, tarih ve isim gibi tam eşleşmeler kaçmaz. En iyi 5 parça modele verilir.
+4. Sağlayıcı embedding sunmuyorsa ya da kota yoksa arama kelime eşleşmesiyle devam eder ve bu not olarak gösterilir.
+
+Belgeler yalnızca bellekte tutulur (en fazla 5 belge, 1 saat); sunucu kapanınca silinir. Tek belgede birkaç yüz
+parça olduğu için ayrı bir vektör veritabanı kullanılmaz; numpy ile bellekte aranır. Soru da istek sınırına tabidir:
+ilk soru "parça sayısı / 100 + 2", sonrakiler 2 istek harcar.
 
 ## Komut satırı
 
