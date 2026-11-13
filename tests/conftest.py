@@ -10,6 +10,6 @@ def ortam_degiskenlerini_temizle(monkeypatch, request):
     if request.node.get_closest_marker("gercek_api"):
         return
     for ad in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_YEDEK_MODEL", "LLM_ZAMAN_ASIMI",
-               "LLM_GIRDI_FIYATI", "LLM_CIKTI_FIYATI"):
+               "LLM_GIRDI_FIYATI", "LLM_CIKTI_FIYATI", "LLM_EN_FAZLA_ISTEK", "LLM_EMBEDDING_MODELI"):
         monkeypatch.delenv(ad, raising=False)
     monkeypatch.setattr("ozetleyici.ayarlar.load_dotenv", lambda: None)

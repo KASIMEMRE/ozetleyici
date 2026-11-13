@@ -1,0 +1,103 @@
+{
+  "aciklama": "Uydurma bir şirketin çalışan el kitabı üzerinde soru-cevap değerlendirmesi. Doğrudan, yeniden ifade edilmiş, hesap gerektiren ve belgede cevabı olmayan sorular içerir.",
+  "belge": "calisan_el_kitabi.txt",
+  "sorular": [
+    {
+      "soru": "Haftalık standart çalışma süresi kaç saat?",
+      "beklenen": "Haftada 45 saat.",
+      "kanit": "haftada 45 saattir",
+      "anahtar": ["45"]
+    },
+    {
+      "soru": "Yöneticimden onay almadan fazla mesai yaparsam ücretini alır mıyım?",
+      "beklenen": "Hayır, onaysız yapılan fazla mesai ücretlendirilmez.",
+      "kanit": "Onaysız yapılan fazla mesai ücretlendirilmez"
+    },
+    {
+      "soru": "Evden çalışırken internet faturam için şirket ne kadar ödüyor?",
+      "beklenen": "Aylık 400 TL internet desteği; maaşla ödenir, fatura istenmez.",
+      "kanit": "aylık 400 TL internet desteği",
+      "anahtar": ["400"]
+    },
+    {
+      "soru": "Yedi yıldır şirkette çalışan biri kaç gün yıllık izin alır?",
+      "beklenen": "20 iş günü (beş yıldan fazla, on beş yıldan az kıdem).",
+      "kanit": "beş yıldan fazla on beş yıldan az olanlara 20 iş günü",
+      "anahtar": ["20"]
+    },
+    {
+      "soru": "İkiz bebek bekleyen bir çalışanın doğum izni toplam kaç hafta olur?",
+      "beklenen": "18 hafta: normal 16 haftaya çoğul gebelik için doğum öncesine 2 hafta eklenir.",
+      "kanit": "Çoğul gebelikte doğum öncesi süreye 2 hafta eklenir",
+      "anahtar": ["18"]
+    },
+    {
+      "soru": "Eşi doğum yapan babalara kaç gün izin veriliyor?",
+      "beklenen": "10 iş günü babalık izni.",
+      "kanit": "10 iş günü babalık izni",
+      "anahtar": ["10"]
+    },
+    {
+      "soru": "Ankara'ya iş seyahatinde otel için gecelik en fazla ne kadar harcayabilirim?",
+      "beklenen": "Gecelik 4.000 TL.",
+      "kanit": "İzmir'de 4.000 TL",
+      "anahtar": ["4.000"]
+    },
+    {
+      "soru": "Masraf fişlerimi en geç ne zamana kadar sisteme girmem gerekiyor?",
+      "beklenen": "Harcama tarihinden itibaren 30 gün içinde; süresinde girilmeyen masraf ödenmez.",
+      "kanit": "30 gün içinde masraf sistemine",
+      "anahtar": ["30"]
+    },
+    {
+      "soru": "Bu yıl kullanmadığım eğitim bütçesi seneye aktarılır mı?",
+      "beklenen": "Hayır, kullanılmayan eğitim bütçesi bir sonraki yıla devretmez.",
+      "kanit": "kullanılmayan bütçe bir sonraki yıla devretmez"
+    },
+    {
+      "soru": "ChatGPT gibi araçlara şirket verisi yazabilir miyim?",
+      "beklenen": "Yalnızca Bilgi Teknolojileri biriminin onayladığı kurumsal yapay zeka araçlarıyla.",
+      "kanit": "yapay zeka sohbet araçlarına girilmesi"
+    },
+    {
+      "soru": "Şirket hesaplarındaki parolalar en az kaç karakter olmalı?",
+      "beklenen": "En az 12 karakter.",
+      "kanit": "en az 12 karakter",
+      "anahtar": ["12"]
+    },
+    {
+      "soru": "Performans notuma itiraz etmek için ne kadar sürem var?",
+      "beklenen": "Sonuçların açıklanmasından itibaren 10 iş günü.",
+      "kanit": "10 iş günü içinde İK'ya yazılı olarak itiraz",
+      "anahtar": ["10"]
+    },
+    {
+      "soru": "İki yıllık kıdemi olan biri istifa ederse ne kadar önceden haber vermeli?",
+      "beklenen": "6 hafta (bir buçuk yıl ile üç yıl arası kıdem).",
+      "kanit": "bir buçuk yıl ile üç yıl arası için 6 hafta",
+      "anahtar": ["6"]
+    },
+    {
+      "soru": "Birlikte çalıştığımız bir tedarikçiden hediye kabul edebilir miyim?",
+      "beklenen": "Değeri 1.000 TL'yi aşan hediye kabul edilemez; altındakiler de hediye kayıt formuna işlenir.",
+      "kanit": "değeri 1.000 TL'yi aşan hediye",
+      "anahtar": ["1.000"]
+    },
+    {
+      "soru": "Evlilik izni kaç gün?",
+      "cevap_yok": true
+    },
+    {
+      "soru": "Yemek kartına her ay ne kadar para yükleniyor?",
+      "cevap_yok": true
+    },
+    {
+      "soru": "Doğum izninden sonra yarım gün çalışma hakkım var mı?",
+      "cevap_yok": true
+    },
+    {
+      "soru": "Şirket servisleri hangi güzergahlarda çalışıyor?",
+      "cevap_yok": true
+    }
+  ]
+}

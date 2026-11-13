@@ -14,6 +14,7 @@ __pycache__/
 # Programın ürettiği çıktılar (özetler belgedeki kişisel veriyi içerebilir)
 ciktilar/
 *.ozet.json
+*.rapor.json
 
 # Editör ve işletim sistemi dosyaları
 .vscode/

@@ -232,14 +232,18 @@ class BelgeIndeksi:
         normlar = np.linalg.norm(dizi, axis=1, keepdims=True)
         self.vektorler = dizi / np.where(normlar == 0, 1, normlar)
 
-    def ara(self, soru: str, soru_vektoru: list[float] | None = None, k: int = GETIRILECEK) -> list[Bulunan]:
+    def ara(self, soru: str, soru_vektoru: list[float] | None = None, k: int = GETIRILECEK,
+            anlam_agirligi: float = ANLAM_AGIRLIGI) -> list[Bulunan]:
+        """En ilgili k parça. anlam_agirligi: 0 = yalnız kelime eşleşmesi, 1 = yalnız anlam benzerliği."""
+        if not 0 <= anlam_agirligi <= 1:
+            raise ValueError("Anlam ağırlığı 0 ile 1 arasında olmalı.")
         kelime = self._bm25.puanla(kelimeler(soru))
         kelime_n = kelime / kelime.max() if kelime.max() > 0 else kelime
         if self.vektorler is not None and soru_vektoru is not None:
             q = np.asarray(soru_vektoru, dtype=np.float32)
             q = q / (np.linalg.norm(q) or 1)
             anlam = np.clip(self.vektorler @ q, 0, 1)
-            puan = ANLAM_AGIRLIGI * anlam + (1 - ANLAM_AGIRLIGI) * kelime_n
+            puan = anlam_agirligi * anlam + (1 - anlam_agirligi) * kelime_n
         else:
             anlam = np.zeros(len(self.parcalar))
             puan = kelime_n
@@ -296,11 +300,12 @@ class CevapSonucu:
     notlar: list[str] = field(default_factory=list)
 
 
-def gereken_istek(indeks: BelgeIndeksi, gomme_modeli: str | None) -> int:
+def gereken_istek(indeks: BelgeIndeksi, gomme_modeli: str | None, soru_vektoru_hazir: bool = False) -> int:
     """Bir soru için gereken en fazla API isteği: cevap + (gerekiyorsa) embedding istekleri."""
     n = 1
     if gomme_modeli and indeks.anlamsal_hata is None:
-        n += 1  # sorunun vektörü
+        if not soru_vektoru_hazir:
+            n += 1  # sorunun vektörü
         if not indeks.anlamsal_hazir:
             n += math.ceil(len(indeks.parcalar) / GOMME_GRUBU)
     return n
@@ -313,7 +318,9 @@ def soruyu_cevapla(
     gomme_modeli: str | None,
     parca_gelince: Callable[[str], None] | None = None,
     akis_sifirlandi: Callable[[], None] | None = None,
+    soru_vektoru: list[float] | None = None,
 ) -> CevapSonucu:
+    """soru_vektoru verilirse sorunun embedding'i yeniden istenmez (değerlendirmede toplu hesaplanır)."""
     soru = " ".join(soru.split())
     if not soru:
         raise ValueError("Soru boş.")
@@ -325,20 +332,21 @@ def soruyu_cevapla(
     # Bütçe yetmeyecekse hiç başlama: yarıda kalan embedding boşa istek harcar.
     butce = getattr(istemci, "butce", None)
     if butce is not None:
-        butce.on_kontrol(gereken_istek(indeks, gomme_modeli))
+        butce.on_kontrol(gereken_istek(indeks, gomme_modeli, soru_vektoru is not None))
 
-    soru_vektoru = None
     if gomme_modeli and indeks.anlamsal_hata is None:
         try:
             if not indeks.anlamsal_hazir:
                 log.info("Belge %d parçaya bölündü; anlam vektörleri hesaplanıyor...", len(indeks.parcalar))
                 indeks.vektorleri_yukle(istemci.gom([p.metin for p in indeks.parcalar], gomme_modeli))
-            soru_vektoru = istemci.gom([soru], gomme_modeli)[0]
+            if soru_vektoru is None:
+                soru_vektoru = istemci.gom([soru], gomme_modeli)[0]
         except (ButceAsildi, IptalEdildi):
             raise
         except (GommeKullanilamiyor, LLMHatasi, ValueError) as hata:
             # Embedding olmadan da kelime aramasıyla devam edilebilir; bu belge için bir daha deneme.
             indeks.anlamsal_hata = str(hata)
+            soru_vektoru = None
             log.warning("Anlamsal arama kullanılamadı (%s); yalnızca kelime eşleşmesiyle aranıyor.", hata)
     if indeks.anlamsal_hata:
         notlar.append("Anlamsal arama kullanılamadı; yalnızca kelime eşleşmesiyle arandı. "
@@ -362,7 +370,8 @@ def soruyu_cevapla(
         for i, b in enumerate(bulunanlar, start=1)
     ]
     return CevapSonucu(
-        soru=soru, cevap=cevap.metin.strip(), kaynaklar=kaynaklar, anlamsal=soru_vektoru is not None,
+        soru=soru, cevap=cevap.metin.strip(), kaynaklar=kaynaklar,
+        anlamsal=soru_vektoru is not None and indeks.anlamsal_hazir,
         model=cevap.model or getattr(istemci, "model", ""), girdi_token=cevap.girdi_token,
         cikti_token=cevap.cikti_token, gomme_token=getattr(istemci, "gomme_token", 0) - gomme_onceki,
         sure_sn=round(time.perf_counter() - baslangic, 2), notlar=notlar,

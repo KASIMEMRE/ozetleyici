@@ -2,7 +2,7 @@
 
 [![Testler](https://github.com/KASIMEMRE/ozetleyici/actions/workflows/test.yml/badge.svg)](https://github.com/KASIMEMRE/ozetleyici/actions/workflows/test.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Sürüm](https://img.shields.io/badge/s%C3%BCr%C3%BCm-0.6.0-informational)
+![Sürüm](https://img.shields.io/badge/s%C3%BCr%C3%BCm-0.7.0-informational)
 
 Word, Excel, PowerPoint, PDF, görsel, ses ve video dosyalarını Türkçe özetleyen, sonra belge hakkında
 sorulan soruları **kaynak göstererek** cevaplayan bir araç. Tarayıcıda çalışan bir arayüzü ve bir komut
@@ -21,6 +21,8 @@ satırı aracı var. Gemini, Claude, OpenAI veya bilgisayarında çalışan Olla
 - **Neyin dışarı çıktığını gösterir:** "Nereye gitti?" bölümü, neyin bilgisayarda kaldığını ve modele kaç
   karakter gönderildiğini gösterir. Ses yazıya dökme ve OCR istenirse tamamen yerelde yapılır.
 - **Model seçebilirsin:** anahtarının erişebildiği modeller listelenir.
+- **Kalitesini ölçebilirsin:** cevabı bilinen sorularla aramanın isabetini, cevapların doğruluğunu ve
+  modelin uydurup uydurmadığını sayıyla gösteren bir değerlendirme aracı vardır.
 
 ![Sorular sekmesi](docs/ekran-sorular.png)
 
@@ -158,7 +160,7 @@ python -m ozetleyici --help                            # tüm seçenekler
 {
   "kaynak_dosya": "ornek_belge.txt",
   "olusturulma": "2026-11-04T14:13:49+00:00",
-  "arac_surumu": "0.6.0",
+  "arac_surumu": "0.7.0",
   "ozet": "Örnek Şirket A.Ş.'nin 1 Ocak 2027 tarihinde yürürlüğe girecek…",
   "model": "gemini-3.5-flash-lite",
   "parca_sayisi": 1,
@@ -228,16 +230,80 @@ ozetleyici/
 ├── llm.py             API istemcisi: yeniden deneme, akış, istek bütçesi, embedding
 ├── ozetle.py          map-reduce özet, prompt'lar
 ├── soru.py            RAG: parçalama, BM25, hibrit arama, atıflı cevap
+├── degerlendir.py     kalite ölçümü: arama isabeti, kurallı kontroller, hakem model
 ├── gizlilik.py        kişisel veri ön kontrolü
 ├── modeller.py        model listesi ve süzme
 ├── cikti.py           JSON çıktısı
 ├── okuyucular/        Word, Excel, PowerPoint, PDF, görsel, ses/video
 └── web/               FastAPI sunucusu ve arayüz (HTML/CSS/JS, dış kütüphane yok)
 tests/                 internetsiz testler (sahte HTTP sunucusuyla)
+degerlendirme/         örnek değerlendirme seti ve belgesi
 scripts/gizli_tara.py  commit öncesi anahtar taraması
 ```
 
 </details>
+
+## Kaliteyi ölçme (değerlendirme)
+
+"Cevaplar iyi görünüyor" demek yerine kaliteyi sayıyla ölçmek için: cevabı bilinen sorulardan oluşan bir
+**değerlendirme seti** hazırlanır ve sistem bu sorularla sınanır. Bir ayarı değiştirdiğinde (parça boyutu,
+arama ağırlığı, model, prompt) aynı seti yeniden çalıştırıp iyileşme mi bozulma mı olduğunu görürsün.
+
+```powershell
+# Ücretsiz: yalnızca aramayı ölç, hiç API isteği atmaz (anahtar da gerekmez)
+$env:LLM_EMBEDDING_MODELI="yok"; python -m ozetleyici.degerlendir degerlendirme/calisan_el_kitabi.json --sadece-arama
+Remove-Item Env:LLM_EMBEDDING_MODELI
+
+# Tam değerlendirme: arama + cevaplar + hakem model (örnek sette en fazla 34 istek, birkaç dakika)
+python -m ozetleyici.degerlendir degerlendirme/calisan_el_kitabi.json --istek-siniri 40
+
+# Bir değişiklikten sonra öncekiyle karşılaştır
+python -m ozetleyici.degerlendir degerlendirme/calisan_el_kitabi.json --istek-siniri 40 `
+    --karsilastir degerlendirme/onceki.rapor.json
+```
+
+Her soru üç katmanda ölçülür:
+
+| Katman | Ne ölçer | Nasıl |
+| --- | --- | --- |
+| **Arama** | Cevabın geçtiği parça modele verilen ilk 5 parçada mı? | Kesin kontrol; `isabet@5` ve `MRR`. Yalnız kelime (0), hibrit (0.6) ve yalnız anlam (1) ağırlıklarıyla ayrı ayrı |
+| **Kurallı kontroller** | Beklenen sayı cevapta mı? Kaynak gösterdi mi? Var olmayan kaynağa atıf var mı? Belgede cevabı olmayan soruda "bulamadım" dedi mi, uydurdu mu? | Kod ile, ücretsiz |
+| **Hakem model** | Cevap beklenen cevapla aynı bilgiyi veriyor mu (**doğruluk**)? Cevaptaki her iddia alıntılarda var mı (**dayanak**)? | Ayrı bir LLM çağrısı (LLM-as-judge), `temperature=0`, JSON cevap |
+
+Bir soru, kurallı kontrollerin hepsini geçip hakemden "doğru" ve "tam" aldığında başarılı sayılır. Belgede
+cevabı olmayan sorularda tek doğru davranış "Belgede bu sorunun cevabını bulamadım." demektir.
+
+**Set dosyası** (`degerlendirme/` klasöründe örneği var):
+
+```json
+{
+  "belge": "calisan_el_kitabi.txt",
+  "sorular": [
+    {"soru": "Ankara'ya iş seyahatinde otel için gecelik en fazla ne kadar harcayabilirim?",
+     "beklenen": "Gecelik 4.000 TL.", "kanit": "İzmir'de 4.000 TL", "anahtar": ["4.000"]},
+    {"soru": "Evlilik izni kaç gün?", "cevap_yok": true}
+  ]
+}
+```
+
+- `kanit`: belgede **birebir** geçen kısa metin; aramanın doğru parçayı bulup bulmadığı buna bakılarak ölçülür.
+  Belgede yoksa araç baştan uyarır.
+- `anahtar`: cevapta mutlaka geçmesi gereken sayı veya kelimeler (`4.000` ile `4000` aynı sayılır).
+- `cevap_yok`: belgede cevabı olmayan, modelin uydurmaya meyilli olabileceği sorular. İyi bir sette bunlar mutlaka olmalı.
+
+| Seçenek | Açıklama |
+| --- | --- |
+| `--sadece-arama` | Cevap üretmeden yalnızca aramayı ölç |
+| `--hakemsiz` | Hakem model kullanma; yalnızca kurallı kontroller (istek sayısı neredeyse yarıya iner) |
+| `--hakem-modeli` | Puanlayan model. Varsayılan cevap veren modelle aynıdır; modeller kendi cevaplarına yumuşak davranabildiği için mümkünse daha güçlü bir model seç |
+| `--agirliklar` | Aramada denenecek anlam ağırlıkları (varsayılan `0;0.6;1`) |
+| `--istek-araligi` | İstekler arası en az bekleme (varsayılan 4 sn = dakikada 15 istek, ücretsiz katman sınırına uygun) |
+| `--karsilastir` | Önceki bir raporla karşılaştırır; hangi soruların düzeldiği/bozulduğunu gösterir |
+| `--en-az-basari` | Başarı oranı bunun altındaysa `5` koduyla çıkar (otomatik kontrol için) |
+
+Rapor `<set>.rapor.json` olarak kaydedilir. Belgeden parçalar ve cevaplar içerdiği için `.gitignore`'dadır.
+Hakem de bir modeldir ve yanılabilir: sonuçları kurallı kontrollerle birlikte oku, şüpheli kararlara
+"Başarısız sorular" listesinden bak.
 
 ## Maliyet kontrolü
 
@@ -251,6 +317,7 @@ Uygulama yalnızca **Özetle** veya **Sor**'a basınca istek atar; arka planda h
 | Model ile ses | 5 dakika başına 1 |
 | İlk soru | parça sayısı / 100 + 2 |
 | Sonraki sorular | 2 |
+| Değerlendirme | belge parçası/100 + soru sayısı/100 + her soruya 1 + hakem için cevaplı soru başına 1 |
 
 - **İstek sınırı** (varsayılan 20, `LLM_EN_FAZLA_ISTEK`): gereken istek iş başlamadan hesaplanır; sınırı aşıyorsa
   hiçbir istek gönderilmeden onay istenir. Tahmin yanlış çıksa bile her istekten önce ayrıca sayıldığı için sınır aşılamaz.
@@ -363,6 +430,7 @@ Test, modelin çıktısını ve cümledeki 6 anahtar kelimeden kaçını doğru 
 | Uzun bağlam: chunking ve map-reduce | `ozetle.py` |
 | Embedding ve vektör araması | `soru.py` (numpy, kosinüs benzerliği) |
 | RAG ve hibrit arama (BM25 + vektör) | `soru.py` |
+| Değerlendirme (eval): altın set, isabet@k, MRR, LLM-as-judge, halüsinasyon ölçümü | `degerlendir.py` |
 | Çok kipli girdi: OCR, konuşma tanıma | `okuyucular/` |
 | Prompt injection ve veri sızıntısına karşı önlemler | `gizlilik.py`, web güvenliği, gizli içerik süzme |
 | Dayanıklılık: yeniden deneme, yedek model, bütçe | `llm.py` |
